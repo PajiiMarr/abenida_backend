@@ -50,6 +50,22 @@ outputs/phase2/preprocessed/*.npy
 # =========================================================
 # Large model files (> 50 MB — use git-lfs if you want them)
 # =========================================================
-# outputs/phase3/gwr_model.pkl
-# outputs/phase3/mgwr_model.pkl
+outputs/phase3/gwr_model.pkl
+outputs/phase3/mgwr_model.pkl
 # models/flood_model_rf_weighted.pkl
+
+# =========================================================
+# BUT commit the small, meaningful artifacts:
+#   outputs/phase3/svm_model.pkl         (~800 KB, fine)
+#   outputs/phase3/mars_model.pkl        (~500 KB, fine)
+#   outputs/phase3/stacking_model.pkl    (~5 MB, borderline)
+#   outputs/phase3/metrics.json
+#   outputs/phase3/model_comparison.csv
+#   outputs/phase3/risk_classification.csv
+#   outputs/phase3/risk_class_mapping.json
+#   outputs/phase3/cv_results.json
+#   outputs/phase3/model_report_summary.md
+#   outputs/phase2/scaler.pkl
+#   outputs/phase2/full_dataset_engineered_standardized.csv
+#   outputs/phase2/feature_names*.json
+# =========================================================

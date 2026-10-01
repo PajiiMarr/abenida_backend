@@ -1,0 +1,39 @@
+{
+  "classes": [
+    "Low Risk",
+    "Medium Risk",
+    "High Risk",
+    "Very High Risk"
+  ],
+  "bins": [
+    0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "distribution": {
+    "Very High Risk": 215,
+    "High Risk": 208,
+    "Low Risk": 203,
+    "Medium Risk": 107
+  },
+  "thresholds": {
+    "Low Risk": [
+      0,
+      0.25
+    ],
+    "Medium Risk": [
+      0.25,
+      0.5
+    ],
+    "High Risk": [
+      0.5,
+      0.75
+    ],
+    "Very High Risk": [
+      0.75,
+      1.0
+    ]
+  }
+}

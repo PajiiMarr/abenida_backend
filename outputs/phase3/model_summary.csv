@@ -1,0 +1,5 @@
+model,bandwidth,r2,aicc,n,k,max_degree,penalty,n_support_vectors,calibrated,n_estimators
+gwr,732.1509407219252,0.2812648593708902,3403.5262897240677,2929.0,10.0,,,,,
+mars,,,,,,2.0,3.0,,,
+svm,,,,,,,,0.0,True,
+stacking,,,,,,,,,,3.0

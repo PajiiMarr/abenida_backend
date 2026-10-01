@@ -1,0 +1,2 @@
+event,flood_pixels,total_pixels,flood_percentage,ndfi_mean,ndfi_std,ndfi_min,ndfi_max
+may_2021,17929,4737776,0.37842650222382823,0.00020452634316185485,0.014299808115384198,0,1

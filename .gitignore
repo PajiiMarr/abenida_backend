@@ -1,0 +1,55 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+venv/
+venv*/
+env/
+ENV/
+.venv/
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+pyGWRx/
+
+.DS_Store
+._*
+.vscode/
+.idea/
+*.swp
+
+
+*.log
+logs/
+tmp/
+.cache/
+
+outputs/phase2/aligned/
+outputs/phase2/registered_sar/
+outputs/phase2/sample_points/*.shp
+outputs/phase2/sample_points/*.shx
+outputs/phase2/sample_points/*.dbf
+outputs/phase2/sample_points/*.prj
+outputs/phase2/preprocessed/*.npy
+
+# =========================================================
+# Large model files (> 50 MB — use git-lfs if you want them)
+# =========================================================
+# outputs/phase3/gwr_model.pkl
+# outputs/phase3/mgwr_model.pkl
+# models/flood_model_rf_weighted.pkl

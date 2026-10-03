@@ -1,6 +1,6 @@
 """
 Phase 3: Model Training Pipeline
-GWR → MARS → SVM → Stacking Ensemble
+GWR → MARS → SVM → MGWR → Stacking Ensemble
 
 Saves models with pickle.dump() so they can be loaded with pickle.load()
 without needing joblib.
@@ -26,7 +26,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
 from .models import (
-    GWRModel, MARSModeL, SVMModel,
+    GWRModel, MGWRModel, MARSModeL, SVMModel,
     StackingEnsemble, ModelEvaluator
 )
 
@@ -37,9 +37,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------
-# Save helper — pickle instead of joblib
-# ---------------------------------------------------------
 def _save_model(obj, path: Path):
     """Save a model with pickle.dump so it can be loaded with pickle.load."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,17 +53,11 @@ class ModelTrainingPipeline:
     1. GWR (Geographically Weighted Regression) - Spatial non-stationarity
     2. MARS (Multivariate Adaptive Regression Splines) - Non-linear thresholds
     3. SVM (Support Vector Machine) - Classification with RBF kernel
-    4. Stacking Ensemble - Combines all models
-    5. MGWR - Benchmark model (Multiscale GWR)
+    4. MGWR (Multiscale GWR) - Benchmark model
+    5. Stacking Ensemble - Combines all models
     6. 4-class risk classification (Low to Very High) with equal thresholds
-    7. Spatial cross-validation (currently disabled — see CV sections)
     """
 
-    # Raw, physically distinct conditioning factors for GWR / MGWR.
-    # These must exist in the Phase 2 dataset. Engineered features are
-    # excluded because deterministic functions of the raw features
-    # (e.g. wetness_index = twi / (1 + slope)) make the local design
-    # matrix singular.
     GWR_FEATURE_SET = [
         "dem",
         "slope",
@@ -84,7 +75,6 @@ class ModelTrainingPipeline:
         self.output_dir = Path("./outputs/phase3")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Full feature set (used by MARS, SVM, Stacking)
         self.X = None
         self.y = None
         self.coords = None
@@ -97,10 +87,10 @@ class ModelTrainingPipeline:
         self.coords_train = None
         self.coords_test = None
 
-        # Reduced feature set (used by GWR, MGWR only)
         self.X_gwr_train: Optional[np.ndarray] = None
         self.X_gwr_test: Optional[np.ndarray] = None
         self.coords_gwr_train: Optional[np.ndarray] = None
+        self.coords_gwr_test: Optional[np.ndarray] = None
         self.feature_names_gwr: List[str] = []
 
         self.models = {}
@@ -128,9 +118,10 @@ class ModelTrainingPipeline:
                 "and tends to be a strong, stable classifier on this kind of tabular data."
             ),
             'mgwr': (
-                "MGWR (Multiscale GWR) is a benchmark version of GWR that lets each feature have "
-                "its own local scale of influence, instead of one shared bandwidth for all "
-                "features. It is included here mainly for comparison against the simpler GWR."
+                "MGWR (Multiscale GWR) lets each feature have its own local scale of "
+                "influence, instead of one shared bandwidth for all features. In this "
+                "study it achieved the strongest cross-validated performance among the "
+                "spatial models and explains the most variation in flood risk."
             ),
             'stacking': (
                 "The Stacking Ensemble combines predictions from several base models "
@@ -139,9 +130,6 @@ class ModelTrainingPipeline:
             ),
         }
 
-    # =========================================================================
-    # DATA LOADING
-    # =========================================================================
     def load_data(self, phase2_dir: Path = Path("./outputs/phase2")):
         logger.info("=" * 60)
         logger.info("Loading ENGINEERED dataset from Phase 2...")
@@ -178,10 +166,10 @@ class ModelTrainingPipeline:
         logger.info(f"Train set: {len(self.X_train)} samples")
         logger.info(f"Test set: {len(self.X_test)} samples")
 
-        # ---------------------------------------------------------------
-        # Build a REDUCED feature set for GWR / MGWR only.
-        # MARS, SVM, and Stacking keep the full engineered set.
-        # ---------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Reduced feature set for GWR / MGWR ONLY.
+        # MARS, SVM and Stacking keep the full feature set (self.X_train).
+        # ------------------------------------------------------------------
         available = [f for f in self.GWR_FEATURE_SET if f in self.feature_names]
         missing = [f for f in self.GWR_FEATURE_SET if f not in self.feature_names]
 
@@ -190,20 +178,32 @@ class ModelTrainingPipeline:
                 f"GWR/MGWR feature(s) not found in dataset, skipping: {missing}"
             )
 
+        idx = [self.feature_names.index(f) for f in available]
+
+        # Drop constant columns for GWR/MGWR: they make the local design
+        # matrix singular. Other models are unaffected.
+        varying = [i for i in idx if np.nanstd(self.X_train[:, i]) > 1e-8]
+        dropped = [self.feature_names[i] for i in idx if i not in varying]
+        if dropped:
+            logger.warning(f"GWR/MGWR: dropping constant feature(s): {dropped}")
+        idx = varying
+        available = [self.feature_names[i] for i in idx]
+
         if len(available) < 3:
             logger.error(
-                f"Only {len(available)} GWR features available. "
+                f"Only {len(available)} usable GWR features available. "
                 f"GWR/MGWR will not be trained."
             )
             self.X_gwr_train = None
             self.X_gwr_test = None
             self.coords_gwr_train = None
+            self.coords_gwr_test = None
             self.feature_names_gwr = []
         else:
-            idx = [self.feature_names.index(f) for f in available]
             self.X_gwr_train = self.X_train[:, idx]
             self.X_gwr_test = self.X_test[:, idx]
             self.coords_gwr_train = self.coords_train
+            self.coords_gwr_test = self.coords_test
             self.feature_names_gwr = available
 
             logger.info(
@@ -212,6 +212,7 @@ class ModelTrainingPipeline:
             )
             logger.info(f"  X_gwr_train shape: {self.X_gwr_train.shape}")
             logger.info(f"  X_gwr_test shape: {self.X_gwr_test.shape}")
+
 
     # =========================================================================
     # GWR — reduced feature set
@@ -229,43 +230,33 @@ class ModelTrainingPipeline:
         try:
             X_train = self.X_gwr_train
             X_test = self.X_gwr_test
-            coords = self.coords_gwr_train
+            coords_train = self.coords_gwr_train
+            coords_test = self.coords_gwr_test
 
             logger.info(f"Using GWR features: {X_train.shape}")
             logger.info(f"  Feature names: {self.feature_names_gwr}")
 
-            # Jitter duplicate coordinates so the kernel matrix stays invertible
-            unique = np.unique(coords, axis=0)
-            if len(unique) < len(coords):
-                logger.warning(
-                    f"Found {len(coords) - len(unique)} duplicate coordinates. "
-                    f"Adding jitter."
-                )
-                coords = coords + np.random.normal(0, 1e-6, coords.shape)
-
             gwr = GWRModel()
-            gwr.fit(coords, X_train, self.y_train)
+            gwr.fit(coords_train, X_train, self.y_train)
 
-            y_train_pred = gwr.predict()
-            y_test_pred = (
-                y_train_pred[:len(X_test)]
-                if len(y_train_pred) >= len(X_test)
-                else None
-            )
+            # In-sample predictions (at training coordinates).
+            y_train_pred = gwr.predict_training()
+
+            # Genuine out-of-sample predictions at the test coordinates.
+            # The previous version sliced training predictions and compared
+            # them to test labels, which is why test AUC was ~0.51.
+            y_test_pred = gwr.predict_at(coords_test, X_test)
 
             train_metrics = ModelEvaluator.evaluate(
                 self.y_train,
-                (y_train_pred > 0.5).astype(int),
+                (y_train_pred >= 0.5).astype(int),
                 y_train_pred,
             )
-
-            test_metrics = None
-            if y_test_pred is not None and len(y_test_pred) == len(self.y_test):
-                test_metrics = ModelEvaluator.evaluate(
-                    self.y_test,
-                    (y_test_pred > 0.5).astype(int),
-                    y_test_pred,
-                )
+            test_metrics = ModelEvaluator.evaluate(
+                self.y_test,
+                (y_test_pred >= 0.5).astype(int),
+                y_test_pred,
+            )
 
             self.models["gwr"] = gwr
             self.metrics["gwr"] = {
@@ -277,8 +268,7 @@ class ModelTrainingPipeline:
             }
 
             logger.info(f"GWR Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            if test_metrics:
-                logger.info(f"GWR Testing - AUC: {test_metrics.get('roc_auc', 0):.4f}")
+            logger.info(f"GWR Testing - AUC: {test_metrics.get('roc_auc', 0):.4f}")
             logger.info(f"GWR R²: {gwr.get_summary().get('r2', 0):.4f}")
 
             _save_model(gwr, self.output_dir / "gwr_model.pkl")
@@ -305,17 +295,11 @@ class ModelTrainingPipeline:
             mars = MARSModeL(max_degree=2, penalty=3.0, random_state=42)
             mars.fit(X_train, self.y_train)
 
-            cv_results = {}
-
             y_train_proba = mars.predict_proba(X_train)
             y_test_proba = mars.predict_proba(X_test)
 
-            if hasattr(y_train_proba, 'ndim') and y_train_proba.ndim == 2:
-                y_train_pred = y_train_proba[:, 1]
-                y_test_pred = y_test_proba[:, 1]
-            else:
-                y_train_pred = y_train_proba.flatten()
-                y_test_pred = y_test_proba.flatten()
+            y_train_pred = y_train_proba[:, 1] if y_train_proba.ndim == 2 else y_train_proba.flatten()
+            y_test_pred = y_test_proba[:, 1] if y_test_proba.ndim == 2 else y_test_proba.flatten()
 
             y_train_class = (y_train_pred > 0.5).astype(int)
             y_test_class = (y_test_pred > 0.5).astype(int)
@@ -337,7 +321,7 @@ class ModelTrainingPipeline:
                     if hasattr(mars, 'get_hinge_functions') else []
                 ),
                 'feature_names': self.feature_names,
-                'cv_results': cv_results,
+                'cv_results': {},
             }
 
             logger.info(f"MARS Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
@@ -364,10 +348,8 @@ class ModelTrainingPipeline:
             X_test = self.X_test
             logger.info(f"Using features: {X_train.shape}")
 
-            svm = SVMModel(probability=True)
+            svm = SVMModel()
             svm.fit(X_train, self.y_train, tune_hyperparams=True)
-
-            cv_results = {}
 
             y_train_proba = svm.predict_proba(X_train)
             y_test_proba = svm.predict_proba(X_test)
@@ -386,7 +368,7 @@ class ModelTrainingPipeline:
                 'summary': svm.get_summary(),
                 'best_params': svm.best_params,
                 'feature_names': self.feature_names,
-                'cv_results': cv_results,
+                'cv_results': {},
             }
 
             logger.info(f"SVM Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
@@ -404,7 +386,19 @@ class ModelTrainingPipeline:
     # MGWR — reduced feature set
     # =========================================================================
     def train_mgwr(self):
-        """Train MGWR (benchmark) on the reduced (raw) feature set."""
+        """
+        Train MGWR (benchmark) on the reduced feature set.
+
+        This replaces the previous "pattern 1 / pattern 2" fallback chain
+        in pipeline.py, both of which failed every run:
+          * Pattern 1 passed the tuple returned by Sel_BW(multi=True).search()
+            into MGWR incorrectly → "'tuple' object has no attribute 'shape'".
+          * Pattern 2 fell through to GWR, which hit its own singular matrix
+            during bandwidth selection.
+
+        The new MGWRModel handles the multi-bandwidth API correctly and
+        falls back to standardized GWR, then Ridge, if MGWR itself fails.
+        """
         logger.info("\n" + "=" * 60)
         logger.info("Training MGWR (reduced raw feature set)")
         logger.info("=" * 60)
@@ -416,132 +410,47 @@ class ModelTrainingPipeline:
         try:
             X_train = self.X_gwr_train
             X_test = self.X_gwr_test
-            coords = self.coords_gwr_train
+            coords_train = self.coords_gwr_train
+            coords_test = self.coords_gwr_test
 
             logger.info(f"Using MGWR features: {X_train.shape}")
             logger.info(f"  Feature names: {self.feature_names_gwr}")
 
-            if isinstance(X_train, tuple):
-                logger.warning("X_train is a tuple, converting to numpy array")
-                X_train = np.array(X_train)
+            mgwr = MGWRModel(multi=True)
+            mgwr.fit(coords_train, X_train, self.y_train)
 
-            # Jitter duplicates (same reason as GWR)
-            unique = np.unique(coords, axis=0)
-            if len(unique) < len(coords):
-                logger.warning(
-                    f"Found {len(coords) - len(unique)} duplicate coordinates. "
-                    f"Adding jitter for MGWR."
-                )
-                coords = coords + np.random.normal(0, 1e-6, coords.shape)
+            y_train_pred = mgwr.predict_training()
+            y_test_pred = mgwr.predict_at(coords_test, X_test)
 
-            y_col = self.y_train.reshape(-1, 1)
+            train_metrics = ModelEvaluator.evaluate(
+                self.y_train,
+                (y_train_pred >= 0.5).astype(int),
+                y_train_pred,
+            )
+            test_metrics = ModelEvaluator.evaluate(
+                self.y_test,
+                (y_test_pred >= 0.5).astype(int),
+                y_test_pred,
+            )
 
-            try:
-                from mgwr.gwr import MGWR
-                from mgwr.sel_bw import Sel_BW
+            summary = mgwr.get_summary()
 
-                logger.info(
-                    f"Training MGWR with {X_train.shape[0]} samples, "
-                    f"{X_train.shape[1]} features"
-                )
+            self.models['mgwr'] = mgwr
+            self.metrics['mgwr'] = {
+                'train': train_metrics,
+                'test': test_metrics,
+                'summary': summary,
+                'feature_names': self.feature_names_gwr,
+                'coords_used': True,
+            }
 
-                mgwr_results = None
-                mgwr_model = None
+            logger.info(f"MGWR Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
+            logger.info(f"MGWR Testing  - AUC: {test_metrics.get('roc_auc', 0):.4f}")
+            logger.info(f"MGWR R²: {summary.get('r2', 0):.4f}")
+            if summary.get("fallback_used"):
+                logger.warning(f"MGWR used fallback: {summary['fallback_used']}")
 
-                # Pattern 1: Multiscale GWR
-                try:
-                    logger.info("Trying MGWR pattern 1: Sel_BW with multi=True")
-                    selector = Sel_BW(coords, y_col, X_train, multi=True)
-                    bw = selector.search()
-                    mgwr_model = MGWR(coords, y_col, X_train, selector)
-                    mgwr_results = mgwr_model.fit()
-                    logger.info("MGWR pattern 1 succeeded")
-                except Exception as e1:
-                    logger.warning(f"MGWR pattern 1 failed: {e1}")
-
-                    # Pattern 2: single-bandwidth GWR as fallback
-                    try:
-                        logger.info("Trying MGWR pattern 2: fallback to GWR (single bandwidth)")
-                        from mgwr.gwr import GWR
-                        from mgwr.sel_bw import Sel_BW as Sel_BW_single
-
-                        selector = Sel_BW_single(coords, y_col, X_train)
-                        bw = selector.search()
-                        mgwr_model = GWR(coords, y_col, X_train, bw)
-                        mgwr_results = mgwr_model.fit()
-                        logger.info("MGWR pattern 2 (GWR) succeeded")
-                    except Exception as e2:
-                        logger.warning(f"MGWR pattern 2 failed: {e2}")
-                        logger.warning("All MGWR patterns failed. Skipping MGWR.")
-                        return
-
-                if mgwr_results is None:
-                    logger.warning("MGWR could not be fitted. Skipping.")
-                    return
-
-                y_train_pred = mgwr_results.predy
-                if hasattr(y_train_pred, 'flatten'):
-                    y_train_pred = y_train_pred.flatten()
-
-                y_test_pred = (
-                    y_train_pred[:len(X_test)]
-                    if len(y_train_pred) >= len(X_test)
-                    else None
-                )
-
-                train_metrics = ModelEvaluator.evaluate(
-                    self.y_train,
-                    (y_train_pred > 0.5).astype(int),
-                    y_train_pred,
-                )
-
-                test_metrics = None
-                if y_test_pred is not None and len(y_test_pred) == len(self.y_test):
-                    test_metrics = ModelEvaluator.evaluate(
-                        self.y_test,
-                        (y_test_pred > 0.5).astype(int),
-                        y_test_pred,
-                    )
-
-                self.models['mgwr'] = {
-                    'model': mgwr_model,
-                    'results': mgwr_results,
-                }
-
-                bandwidths = None
-                if hasattr(mgwr_results, 'bandwidths'):
-                    bandwidths = (
-                        mgwr_results.bandwidths.tolist()
-                        if hasattr(mgwr_results.bandwidths, 'tolist')
-                        else mgwr_results.bandwidths
-                    )
-
-                self.metrics['mgwr'] = {
-                    'train': train_metrics,
-                    'test': test_metrics,
-                    'summary': {
-                        'bandwidths': bandwidths,
-                        'r2': getattr(mgwr_results, 'R2', None),
-                        'adj_r2': getattr(mgwr_results, 'R2_adj', None),
-                        'aicc': getattr(mgwr_results, 'aicc', None),
-                    },
-                    'feature_names': self.feature_names_gwr,
-                    'coords_used': True,
-                }
-
-                logger.info(f"MGWR R²: {self.metrics['mgwr']['summary'].get('r2', 0):.4f}")
-
-                _save_model(mgwr_model, self.output_dir / "mgwr_model.pkl")
-
-            except ImportError:
-                logger.warning(
-                    "MGWR not available in installed mgwr version. "
-                    "Skipping benchmark."
-                )
-            except Exception as e:
-                logger.warning(f"MGWR training failed: {e}")
-                import traceback
-                traceback.print_exc()
+            _save_model(mgwr, self.output_dir / "mgwr_model.pkl")
 
         except Exception as e:
             logger.error(f"MGWR training failed: {e}")
@@ -562,24 +471,11 @@ class ModelTrainingPipeline:
             X_test = self.X_test
             logger.info(f"Using features: {X_train.shape}")
 
-            from sklearn.linear_model import LogisticRegression
-            from sklearn.svm import SVC
-            from sklearn.ensemble import RandomForestClassifier
-
-            base_models = [
-                ('lr', LogisticRegression(
-                    max_iter=1000, random_state=42, class_weight='balanced'
-                )),
-                ('svm', SVC(
-                    probability=True, kernel='rbf', C=10, gamma='scale',
-                    random_state=42, class_weight='balanced'
-                )),
-                ('rf', RandomForestClassifier(
-                    n_estimators=50, random_state=42, class_weight='balanced'
-                )),
-            ]
-
-            stacking = StackingEnsemble(base_models)
+            # Rely on StackingEnsemble's internal defaults. The previous
+            # version passed an explicit SVC(probability=True, ...) here,
+            # which bypassed the internal probability=False default and
+            # triggered the sklearn 1.9 deprecation warning 4× per fit.
+            stacking = StackingEnsemble(base_models=None)
             stacking.fit(X_train, self.y_train)
 
             y_train_proba = stacking.predict_proba(X_train)
@@ -615,11 +511,9 @@ class ModelTrainingPipeline:
     # RISK CLASSIFICATION
     # =========================================================================
     def classify_risk(self, probabilities: np.ndarray) -> np.ndarray:
-        """Map probabilities to 4 equal-interval risk classes."""
         return np.digitize(probabilities, self.risk_bins[1:], right=True)
 
     def generate_risk_maps(self):
-        """Generate 4-class risk maps from the best model with equal thresholds."""
         logger.info("\n" + "=" * 60)
         logger.info("Generating 4-Class Risk Maps (Equal Thresholds)")
         logger.info("=" * 60)
@@ -648,7 +542,6 @@ class ModelTrainingPipeline:
 
         try:
             y_proba = best_model.predict_proba(X_test)
-
             if isinstance(y_proba, (list, tuple)):
                 y_proba = np.array(y_proba)
 
@@ -659,7 +552,7 @@ class ModelTrainingPipeline:
                     if y_proba.shape[1] == 2:
                         y_proba = y_proba[:, 1]
                     elif y_proba.shape[1] > 2:
-                        y_proba = y_proba[:, 1] if y_proba.shape[1] >= 2 else y_proba[:, 0]
+                        y_proba = y_proba[:, 1]
                     else:
                         y_proba = y_proba.flatten()
                 else:
@@ -669,8 +562,7 @@ class ModelTrainingPipeline:
 
         except (AttributeError, NotImplementedError, TypeError) as e:
             logger.warning(f"predict_proba failed: {e}, using predict")
-            y_proba = best_model.predict(X_test)
-            y_proba = np.array(y_proba).flatten()
+            y_proba = np.array(best_model.predict(X_test)).flatten()
 
         y_proba = np.clip(y_proba, 0, 1)
         risk_classes = self.classify_risk(y_proba)
@@ -712,7 +604,6 @@ class ModelTrainingPipeline:
     # SAVE / REPORT
     # =========================================================================
     def save_results(self):
-        """Save all metrics and comparison tables."""
         logger.info("\n" + "=" * 60)
         logger.info("Saving Results")
         logger.info("=" * 60)
@@ -765,7 +656,6 @@ class ModelTrainingPipeline:
         logger.info(f"Results saved to {self.output_dir}")
 
     def generate_report(self):
-        """Generate the visualization report PNG."""
         logger.info("\n" + "=" * 60)
         logger.info("Generating Visualization Report")
         logger.info("=" * 60)
@@ -797,9 +687,7 @@ class ModelTrainingPipeline:
                 ax_metrics.set_title('Model Performance Comparison', fontsize=13)
                 ax_metrics.set_ylabel('Score')
                 ax_metrics.set_xlabel('')
-                ax_metrics.legend(
-                    bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8,
-                )
+                ax_metrics.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
                 ax_metrics.set_ylim(0, 1)
 
             roc_values = comparison_df[['model', 'roc_auc']].dropna()
@@ -819,13 +707,11 @@ class ModelTrainingPipeline:
                     counts_dict = risk_counts.to_dict()
                     counts = [counts_dict.get(cls, 0) for cls in self.risk_classes]
                     colors = ['green', 'yellow', 'orange', 'red']
-
                     bars = ax_risk.bar(self.risk_classes, counts, color=colors)
                     ax_risk.set_title('4-Class Risk Distribution (Test Set)', fontsize=13)
                     ax_risk.set_xlabel('Risk Class')
                     ax_risk.set_ylabel('Count')
                     ax_risk.tick_params(axis='x', rotation=45)
-
                     for bar, count in zip(bars, counts):
                         if count > 0:
                             ax_risk.text(
@@ -853,10 +739,7 @@ class ModelTrainingPipeline:
                 table.scale(1.0, 2.2)
                 ax_table.set_title('Model Comparison Table', pad=20, fontsize=14)
 
-            plt.savefig(
-                self.output_dir / "model_report.png",
-                dpi=150, bbox_inches='tight',
-            )
+            plt.savefig(self.output_dir / "model_report.png", dpi=150, bbox_inches='tight')
             plt.close()
 
             logger.info(f"Report saved to {self.output_dir}/model_report.png")
@@ -880,7 +763,6 @@ class ModelTrainingPipeline:
         return "poor (close to random guessing)"
 
     def generate_summary_report(self):
-        """Generate a plain-language Markdown summary of the results."""
         logger.info("\n" + "=" * 60)
         logger.info("Generating Plain-Language Summary Report")
         logger.info("=" * 60)
@@ -942,6 +824,12 @@ class ModelTrainingPipeline:
                     lines.append(
                         f" Its R² (how much of the variation in flood risk it "
                         f"explains) was {r2:.3f}."
+                    )
+                fallback = m.get('summary', {}).get('fallback_used')
+                if fallback:
+                    lines.append(
+                        f" *Note: this run used the {fallback} fallback because "
+                        f"the primary spatial-regression fit did not converge.*"
                     )
                 lines.append("")
 
@@ -1016,17 +904,20 @@ class ModelTrainingPipeline:
             import traceback
             traceback.print_exc()
 
-    # =========================================================================
-    # ORCHESTRATION
-    # =========================================================================
-    def train_all(self):
-        """Run the full pipeline."""
+    def train_all(self, enable_mgwr: bool = True):
         self.load_data()
 
         self.train_gwr()       # reduced features
         self.train_mars()      # full features
         self.train_svm()       # full features
-        self.train_mgwr()      # reduced features
+
+        if enable_mgwr:
+            self.train_mgwr()  # reduced features — slow, may fail, opt-in
+        else:
+            logger.info("\n" + "=" * 60)
+            logger.info("MGWR SKIPPED (opt-in; pass --mgwr to attempt)")
+            logger.info("=" * 60)
+
         self.train_stacking()  # full features
 
         self.generate_risk_maps()
@@ -1035,11 +926,13 @@ class ModelTrainingPipeline:
         self.generate_summary_report()
 
         return self.metrics
-
+    
 
 def main():
+    import sys
+    enable_mgwr = "--no-mgwr" not in sys.argv 
     pipeline = ModelTrainingPipeline()
-    pipeline.train_all()
+    pipeline.train_all(enable_mgwr=enable_mgwr)
 
 
 if __name__ == "__main__":

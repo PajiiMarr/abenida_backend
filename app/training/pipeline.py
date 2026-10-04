@@ -103,25 +103,25 @@ class ModelTrainingPipeline:
         self.model_descriptions = {
             'gwr': (
                 "GWR (Geographically Weighted Regression) checks whether the relationship "
-                "between flood-related features (like elevation and distance to river) and "
+                "between flood-related features (like elevation and slope) and "
                 "flood risk changes from one part of the city to another, instead of assuming "
                 "one fixed relationship everywhere."
             ),
             'mars': (
                 "MARS (Multivariate Adaptive Regression Splines) looks for threshold effects — "
-                "points where a feature (e.g. slope or drainage density) starts to matter a lot "
+                "points where a feature (e.g. slope or TWI) starts to matter a lot "
                 "more or less to flood risk — rather than assuming a straight-line relationship."
+            ),
+            'mgwr': (
+                "MGWR (Multiscale GWR) lets each feature have its own local scale of "
+                "influence, instead of one shared bandwidth for all features. Here it is "
+                "fitted with a custom backfitting routine; the intercept varies at a very "
+                "local scale while the other effects are close to constant across the area."
             ),
             'svm': (
                 "SVM (Support Vector Machine) with an RBF kernel draws a flexible boundary "
                 "between flood-prone and non-flood-prone areas based on all features combined, "
                 "and tends to be a strong, stable classifier on this kind of tabular data."
-            ),
-            'mgwr': (
-                "MGWR (Multiscale GWR) lets each feature have its own local scale of "
-                "influence, instead of one shared bandwidth for all features. In this "
-                "study it achieved the strongest cross-validated performance among the "
-                "spatial models and explains the most variation in flood risk."
             ),
             'stacking': (
                 "The Stacking Ensemble combines predictions from several base models "
@@ -386,19 +386,7 @@ class ModelTrainingPipeline:
     # MGWR — reduced feature set
     # =========================================================================
     def train_mgwr(self):
-        """
-        Train MGWR (benchmark) on the reduced feature set.
-
-        This replaces the previous "pattern 1 / pattern 2" fallback chain
-        in pipeline.py, both of which failed every run:
-          * Pattern 1 passed the tuple returned by Sel_BW(multi=True).search()
-            into MGWR incorrectly → "'tuple' object has no attribute 'shape'".
-          * Pattern 2 fell through to GWR, which hit its own singular matrix
-            during bandwidth selection.
-
-        The new MGWRModel handles the multi-bandwidth API correctly and
-        falls back to standardized GWR, then Ridge, if MGWR itself fails.
-        """
+        """Train the numpy backfitting multiscale GWR on the reduced feature set."""
         logger.info("\n" + "=" * 60)
         logger.info("Training MGWR (reduced raw feature set)")
         logger.info("=" * 60)
@@ -915,7 +903,7 @@ class ModelTrainingPipeline:
             self.train_mgwr()  # reduced features — slow, may fail, opt-in
         else:
             logger.info("\n" + "=" * 60)
-            logger.info("MGWR SKIPPED (opt-in; pass --mgwr to attempt)")
+            logger.info("MGWR SKIPPED (--no-mgwr was passed)")
             logger.info("=" * 60)
 
         self.train_stacking()  # full features

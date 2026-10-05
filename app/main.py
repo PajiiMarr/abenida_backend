@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 import json
 import logging
+import os
+import secrets
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -37,14 +39,41 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://fsizc.vercel.app",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-OUTPUT_DIR = Path("./outputs/phase2")
-PHASE3_DIR = Path("./outputs/phase3")
+# ---------- API key auth (for destructive / expensive endpoints) ----------
+# Set FSI_API_KEY in the environment. If it's missing we generate a random
+# one on startup and log it so the operator can read it from the logs —
+# this avoids a KeyError that would prevent the app from booting.
+_FSI_API_KEY_ENV = os.environ.get("FSI_API_KEY")
+if _FSI_API_KEY_ENV:
+    API_KEY = _FSI_API_KEY_ENV
+    logger.info("FSI_API_KEY loaded from environment.")
+else:
+    API_KEY = secrets.token_urlsafe(32)
+    logger.warning(
+        "FSI_API_KEY not set in environment; generated a random one for "
+        f"this session: {API_KEY}"
+    )
+
+
+def require_key(x_api_key: str = Header(..., description="API key")):
+    """Reject requests without a valid X-API-Key header."""
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+
+BASE_DIR = Path(os.environ.get("BASE_DIR") or ".")
+OUTPUT_DIR = Path(os.environ.get("PREPROCESS_DIR") or BASE_DIR / "outputs/phase2")
+PHASE3_DIR = BASE_DIR / "outputs/phase3"
 
 
 # ---------- Phase 2 data (optional; API works without it) ----------
@@ -625,7 +654,10 @@ async def predict_batch(req: PredictBatchRequest):
     }
 
 
-@app.post("/api/generate_susceptibility")
+@app.post(
+    "/api/generate_susceptibility",
+    dependencies=[Depends(require_key)],
+)
 async def generate_susceptibility(req: GenerateRasterRequest):
     """Run full-raster prediction and save GeoTIFF (probability + risk classes)."""
     model = registry.get(req.model)
@@ -706,7 +738,10 @@ async def susceptibility_at(lat: float, lng: float, model: str = "stacking"):
 
 
 # ---------- File download ----------
-@app.get("/api/download/{file_type}")
+@app.get(
+    "/api/download/{file_type}",
+    dependencies=[Depends(require_key)],
+)
 async def download_file(file_type: str):
     files = {
         "features": OUTPUT_DIR / "features.csv",

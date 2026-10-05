@@ -1,0 +1,48 @@
+# --- Virtualenv / caches ---
+venv311/
+venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Git / IDE / OS ---
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+._*
+
+# --- Local env & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Logs / temp ---
+*.log
+logs/
+tmp/
+.cache/
+
+# --- Training-only scripts at repo root ---
+activate.sh
+run.sh
+add_rainfall_features.py
+check_coords.py
+create_event_datasets.py
+extract_event_rainfall.py
+register_sar_to_dem.py
+train_model.py
+pyGWRx/
+
+# --- Heavy Phase 2 intermediates (excluded from the phase2 COPY) ---
+outputs/phase2/registered_sar/
+outputs/phase2/sample_points/
+outputs/phase2/aligned/*.aux.xml
+outputs/phase2/aligned/*.ovr
+outputs/phase2/*.tmp
+
+pyGWRx/

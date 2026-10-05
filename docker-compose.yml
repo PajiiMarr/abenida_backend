@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fsi-backend:local
+    ports:
+      - "8000:8000"
+    environment:
+      # Override here if you want to swap output dirs at runtime
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Live-mount outputs so you can retrain without rebuilding
+      - ./outputs/phase3:/app/outputs/phase3:ro
+      - ./outputs/phase2/aligned:/app/outputs/phase2/aligned:ro
+      - ./outputs/phase2/preprocessed:/app/outputs/phase2/preprocessed:ro
+    restart: unless-stopped

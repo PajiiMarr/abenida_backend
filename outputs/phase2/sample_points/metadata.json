@@ -1,8 +1,8 @@
 {
-  "n_samples": 3662,
-  "n_flood": 1662,
+  "n_samples": 4000,
+  "n_flood": 2000,
   "n_non_flood": 2000,
-  "flood_ratio": 0.4538503549972693,
+  "flood_ratio": 0.5,
   "crs": "EPSG:32651",
   "metadata": {
     "crs": "EPSG:32651",

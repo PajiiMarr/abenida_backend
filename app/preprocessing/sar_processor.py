@@ -38,7 +38,7 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        events = ['may_2021']
+        events = ['may_2021', 'oct_2022']
         sar_data = {}
         
         for event in events:
@@ -66,7 +66,7 @@ class SARProcessor:
             else:
                 event_data['ndfi'] = None
             
-            # Load VH
+            # Load VH (optional; oct_2022 has diff_db instead)
             vh_path = self.sar_dir / f"{event}_vh_registered.tif"
             if vh_path.exists():
                 with rasterio.open(vh_path) as src:
@@ -124,54 +124,26 @@ class SARProcessor:
         return flood_inventory
     
     def _get_flood_boundary_pixels(self, flood_map: np.ndarray, buffer_size: int = 5) -> np.ndarray:
-        """
-        Get pixels near flood boundaries (transition zones)
-        
-        Args:
-            flood_map: Binary flood map (1=flood, 0=non-flood)
-            buffer_size: Number of pixels around boundary to include
-        
-        Returns:
-            Array of (row, col) coordinates near flood boundaries
-        """
-        # Calculate distance to flood boundary
+        """Get pixels near flood boundaries (transition zones)"""
         distance = distance_transform_edt(flood_map == 0)
-        
-        # Get boundary pixels (within buffer_size of flood edge)
         boundary_mask = (distance <= buffer_size) & (distance > 0)
         boundary_rows, boundary_cols = np.where(boundary_mask)
-        
         return np.column_stack([boundary_rows, boundary_cols])
     
     def _get_stratified_samples(self, coords: np.ndarray, labels: np.ndarray, 
                                  n_samples: int, n_grid: int = 10) -> np.ndarray:
-        """
-        Get samples using spatial grid stratification
-        
-        Args:
-            coords: Array of (row, col) coordinates
-            labels: Array of labels
-            n_samples: Number of samples to select
-            n_grid: Number of grid cells per dimension (n_grid x n_grid)
-        
-        Returns:
-            Indices of selected samples
-        """
+        """Get samples using spatial grid stratification"""
         if len(coords) <= n_samples:
             return np.arange(len(coords))
         
-        # Get bounds
         row_min, row_max = coords[:, 0].min(), coords[:, 0].max()
         col_min, col_max = coords[:, 1].min(), coords[:, 1].max()
         
-        # Calculate grid cell size
         row_step = (row_max - row_min) / n_grid
         col_step = (col_max - col_min) / n_grid
         
-        # Initialize grid
         grid_cells = {}
         
-        # Assign each point to a grid cell
         for i, (row, col) in enumerate(coords):
             grid_row = int((row - row_min) / row_step) if row_step > 0 else 0
             grid_col = int((col - col_min) / col_step) if col_step > 0 else 0
@@ -188,7 +160,6 @@ class SARProcessor:
             else:
                 grid_cells[key]['non_flood'].append(i)
         
-        # Sample from each grid cell
         selected_indices = []
         n_cells = len(grid_cells)
         samples_per_cell = max(1, n_samples // n_cells)
@@ -199,11 +170,9 @@ class SARProcessor:
             if len(cell_indices) <= samples_per_cell:
                 selected_indices.extend(cell_indices)
             else:
-                # Random sample from this cell
                 chosen = np.random.choice(cell_indices, samples_per_cell, replace=False)
                 selected_indices.extend(chosen.tolist())
         
-        # If we have too many, randomly subsample
         if len(selected_indices) > n_samples:
             selected_indices = np.random.choice(selected_indices, n_samples, replace=False).tolist()
         
@@ -211,26 +180,13 @@ class SARProcessor:
     
     def _get_cluster_samples(self, coords: np.ndarray, labels: np.ndarray,
                               n_samples: int, n_clusters: int = 20) -> np.ndarray:
-        """
-        Get samples using K-means clustering for spatial coverage
-        
-        Args:
-            coords: Array of (row, col) coordinates
-            labels: Array of labels
-            n_samples: Number of samples to select
-            n_clusters: Number of clusters
-        
-        Returns:
-            Indices of selected samples
-        """
+        """Get samples using K-means clustering for spatial coverage"""
         if len(coords) <= n_samples:
             return np.arange(len(coords))
         
-        # Cluster coordinates
         kmeans = KMeans(n_clusters=min(n_clusters, len(coords) // 10), random_state=42, n_init=10)
         clusters = kmeans.fit_predict(coords)
         
-        # Sample from each cluster
         selected_indices = []
         samples_per_cluster = max(1, n_samples // len(np.unique(clusters)))
         
@@ -240,11 +196,9 @@ class SARProcessor:
             if len(cluster_indices) <= samples_per_cluster:
                 selected_indices.extend(cluster_indices.tolist())
             else:
-                # Sample from this cluster
                 chosen = np.random.choice(cluster_indices, samples_per_cluster, replace=False)
                 selected_indices.extend(chosen.tolist())
         
-        # If we have too many, randomly subsample
         if len(selected_indices) > n_samples:
             selected_indices = np.random.choice(selected_indices, n_samples, replace=False).tolist()
         
@@ -254,19 +208,7 @@ class SARProcessor:
                              n_samples: int = 4000,
                              flood_ratio: float = 0.5,
                              sampling_method: str = 'stratified') -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Create balanced sample points using improved spatial sampling
-        
-        Args:
-            flood_inventory: Dictionary from generate_flood_inventory()
-            n_samples: Total number of samples to generate
-            flood_ratio: Proportion of flood samples (0.5 = balanced)
-            sampling_method: 'stratified', 'cluster', 'boundary', or 'random'
-            
-        Returns:
-            sample_points: Array of (row, col) coordinates
-            sample_labels: Array of labels (1=flood, 0=non-flood)
-        """
+        """Create balanced sample points using improved spatial sampling"""
         if flood_inventory is None:
             flood_inventory = self.flood_inventory
         
@@ -282,19 +224,16 @@ class SARProcessor:
         for event, info in flood_inventory.items():
             flood_map = info['flood_map']
             
-            # Get flood pixel coordinates
             flood_rows, flood_cols = np.where(flood_map > 0)
             flood_coords = np.column_stack([flood_rows, flood_cols])
             flood_labels = np.ones(len(flood_coords))
             
-            # Get non-flood pixel coordinates
             non_flood_rows, non_flood_cols = np.where(flood_map == 0)
             non_flood_coords = np.column_stack([non_flood_rows, non_flood_cols])
             non_flood_labels = np.zeros(len(non_flood_coords))
             
             logger.info(f"{event}: {len(flood_coords)} flood, {len(non_flood_coords)} non-flood pixels")
             
-            # Sample flood points using improved method
             if len(flood_coords) > 0:
                 if sampling_method == 'stratified':
                     flood_idx = self._get_stratified_samples(flood_coords, flood_labels, n_flood)
@@ -305,12 +244,10 @@ class SARProcessor:
                 elif sampling_method == 'boundary':
                     boundary_coords = self._get_flood_boundary_pixels(flood_map, buffer_size=10)
                     if len(boundary_coords) > 0:
-                        # Prioritize boundary pixels
                         n_boundary = min(n_flood // 2, len(boundary_coords))
                         boundary_idx = np.random.choice(len(boundary_coords), n_boundary, replace=False)
                         boundary_samples = boundary_coords[boundary_idx]
                         
-                        # Fill remaining from random flood pixels
                         remaining = n_flood - n_boundary
                         flood_coords_filtered = flood_coords[~np.isin(flood_coords, boundary_samples).all(axis=1)]
                         if len(flood_coords_filtered) > remaining:
@@ -329,7 +266,6 @@ class SARProcessor:
                 all_flood_points.append(flood_samples)
                 logger.info(f"  Sampled {len(flood_samples)} flood points using {sampling_method}")
             
-            # Sample non-flood points using improved method
             if len(non_flood_coords) > 0:
                 if sampling_method == 'stratified':
                     non_flood_idx = self._get_stratified_samples(non_flood_coords, non_flood_labels, n_non_flood)
@@ -338,14 +274,12 @@ class SARProcessor:
                     non_flood_idx = self._get_cluster_samples(non_flood_coords, non_flood_labels, n_non_flood)
                     non_flood_samples = non_flood_coords[non_flood_idx]
                 elif sampling_method == 'boundary':
-                    # Sample non-flood near boundaries
                     boundary_coords = self._get_flood_boundary_pixels(flood_map, buffer_size=15)
                     if len(boundary_coords) > 0:
                         n_boundary = min(n_non_flood // 2, len(boundary_coords))
                         boundary_idx = np.random.choice(len(boundary_coords), n_boundary, replace=False)
                         boundary_samples = boundary_coords[boundary_idx]
                         
-                        # Fill remaining from random non-flood
                         remaining = n_non_flood - n_boundary
                         non_flood_filtered = non_flood_coords[~np.isin(non_flood_coords, boundary_samples).all(axis=1)]
                         if len(non_flood_filtered) > remaining:
@@ -364,7 +298,6 @@ class SARProcessor:
                 all_non_flood_points.append(non_flood_samples)
                 logger.info(f"  Sampled {len(non_flood_samples)} non-flood points using {sampling_method}")
         
-        # Combine all points
         if all_flood_points:
             flood_points = np.vstack(all_flood_points)
         else:
@@ -375,7 +308,6 @@ class SARProcessor:
         else:
             non_flood_points = np.array([]).reshape(0, 2)
         
-        # Adjust if we don't have enough points
         if len(flood_points) < n_flood:
             logger.warning(f"Only {len(flood_points)} flood points available, adjusting")
             n_flood_actual = len(flood_points)
@@ -389,7 +321,6 @@ class SARProcessor:
         else:
             n_non_flood_actual = n_non_flood
         
-        # Sample final sets
         if len(flood_points) > n_flood_actual:
             indices = np.random.choice(len(flood_points), n_flood_actual, replace=False)
             final_flood = flood_points[indices]
@@ -402,14 +333,12 @@ class SARProcessor:
         else:
             final_non_flood = non_flood_points
         
-        # Combine and shuffle
         sample_points = np.vstack([final_flood, final_non_flood])
         sample_labels = np.concatenate([
             np.ones(len(final_flood)),
             np.zeros(len(final_non_flood))
         ])
         
-        # Shuffle
         shuffle_idx = np.random.permutation(len(sample_points))
         sample_points = sample_points[shuffle_idx]
         sample_labels = sample_labels[shuffle_idx]
@@ -501,16 +430,13 @@ class SARProcessor:
         csv_path = sample_dir / "sample_points.csv"
         gdf.drop(columns='geometry').to_csv(csv_path, index=False)
         
-        # Create a clean copy of metadata without non-serializable objects
         metadata_clean = {}
         if metadata:
             for key, value in metadata.items():
                 if key == 'transform':
-                    # Convert transform to string representation
                     if value is not None:
                         metadata_clean['transform'] = str(value)
                 elif key == 'bounds':
-                    # Convert bounds to string or tuple
                     if value is not None:
                         try:
                             metadata_clean['bounds'] = {
@@ -572,15 +498,12 @@ def main():
     processor = SARProcessor()
     
     try:
-        # Load SAR data
         sar_data = processor.load_preprocessed_sar()
         logger.info(f"Loaded SAR data for {len(sar_data)} events")
         
-        # Generate flood inventory
         flood_inventory = processor.generate_flood_inventory()
         logger.info(f"Generated flood inventory with {len(flood_inventory)} events")
         
-        # Test different sampling methods
         methods = ['stratified', 'cluster', 'boundary', 'random']
         
         for method in methods:
@@ -591,11 +514,9 @@ def main():
             )
             logger.info(f"  {method}: {len(points)} points, {np.sum(labels)} flood, {len(labels) - np.sum(labels)} non-flood")
         
-        # Save final sample points
         gdf = processor.save_sample_points(points, labels)
         logger.info("Sample points saved")
         
-        # Get summary
         summary = processor.get_sar_summary()
         logger.info(f"\n{summary}")
         

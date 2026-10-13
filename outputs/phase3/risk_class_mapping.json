@@ -13,10 +13,10 @@
     1.0
   ],
   "distribution": {
-    "Very High Risk": 207,
-    "High Risk": 207,
-    "Low Risk": 203,
-    "Medium Risk": 116
+    "High Risk": 363,
+    "Medium Risk": 320,
+    "Low Risk": 82,
+    "Very High Risk": 35
   },
   "thresholds": {
     "Low Risk": [

@@ -1,5 +1,5 @@
 {
-  "total_samples": 3662,
+  "total_samples": 4000,
   "n_features": 47,
   "n_raw_features": 10,
   "n_engineered_features": 37,
@@ -52,7 +52,7 @@
     "twi_slope_ratio",
     "flow_dist_ratio"
   ],
-  "flood_samples": 1662,
+  "flood_samples": 2000,
   "non_flood_samples": 2000,
-  "flood_percentage": 45.385035499726925
+  "flood_percentage": 50.0
 }

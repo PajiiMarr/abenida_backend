@@ -74,6 +74,16 @@ SAR_REGISTERED = {
         "ndfi": REGISTERED_SAR_DIR / "may_2021_ndfi_registered.tif",
         "vh": REGISTERED_SAR_DIR / "may_2021_vh_registered.tif",
     },
+    "oct_2022": {
+        # Raw SNAP outputs (pre-registration):
+        #   .../SAR DATAS/October 27-29, 2022/outputs/flood_map.tif
+        #   .../SAR DATAS/October 27-29, 2022/outputs/ndfi.tif
+        #   .../SAR DATAS/October 27-29, 2022/outputs/diff_db.tif
+        "flood_map": REGISTERED_SAR_DIR / "oct_2022_flood_map_registered.tif",
+        "ndfi": REGISTERED_SAR_DIR / "oct_2022_ndfi_registered.tif",
+        "vh": REGISTERED_SAR_DIR / "oct_2022_vh_registered.tif",
+        "diff_db": REGISTERED_SAR_DIR / "oct_2022_diff_db_registered.tif",
+    },
 }
 
 FLOOD_EVENTS = {
@@ -81,13 +91,27 @@ FLOOD_EVENTS = {
         "name": "May 19, 2021",
         "date": datetime(2021, 5, 19),
         "sar_key": "may_2021",
+        "pre_date": datetime(2021, 5, 17),
+        "post_date": datetime(2021, 5, 29),
         "days_before": 7,
         "days_after": 7,
+    },
+    "oct_2022": {
+        "name": "October 27-29, 2022 (Typhoon Nalgae/Paeng)",
+        "date": datetime(2022, 10, 28),  # peak flooding
+        "sar_key": "oct_2022",
+        "pre_date": datetime(2022, 10, 20),
+        "post_date": datetime(2022, 11, 1),
+        "days_before": 8,
+        "days_after": 4,
     },
 }
 
 AVAILABLE_EVENTS = list(FLOOD_EVENTS.keys())
-ACTIVE_EVENT = "may_2021" 
+
+# Switch this to whichever event you want the pipeline to process.
+# October 2022 is the preferred event (tighter temporal gap, better flood signal).
+ACTIVE_EVENT = "oct_2022"
 
 # ============================================================
 # SOCIO-DEMOGRAPHIC DATA

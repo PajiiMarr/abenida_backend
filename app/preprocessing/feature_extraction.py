@@ -153,7 +153,8 @@ class FeatureExtractor:
     
     def _create_engineered_features(self, X: np.ndarray, points: np.ndarray) -> np.ndarray:
         """
-        Create engineered features from raw features with safe handling
+        Create engineered features from raw features with safe handling.
+        Features not listed in config.ENGINEERED_FEATURES are pruned at the end.
         """
         logger.info("Creating engineered features...")
         
@@ -394,6 +395,18 @@ class FeatureExtractor:
         if flow_acc is not None and dist_river is not None:
             flow_safe = np.clip(flow_acc, 0, 1e6)
             add_feature(np.log1p(flow_safe) / (dist_river + 1), 'flow_dist_ratio')
+        
+        # ============================================================
+        # WHITELIST FILTER — keep only features enabled in config.py
+        # ============================================================
+        if ENGINEERED_FEATURES:
+            allowed = set(ENGINEERED_FEATURES)
+            kept_idx = [i for i, n in enumerate(self.engineered_feature_names) if n in allowed]
+            dropped = [n for n in self.engineered_feature_names if n not in allowed]
+            engineered = [engineered[i] for i in kept_idx]
+            self.engineered_feature_names = [self.engineered_feature_names[i] for i in kept_idx]
+            if dropped:
+                logger.info(f"  Pruned {len(dropped)} engineered feature(s) not in ENGINEERED_FEATURES whitelist")
         
         # Combine all engineered features
         X_engineered = np.column_stack(engineered) if engineered else np.array([]).reshape(X.shape[0], 0)

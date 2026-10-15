@@ -1,14 +1,17 @@
+
 name: Build and Deploy Backend
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "app/**"
       - "outputs/**"
       - "requirements.txt"
       - "Dockerfile"
       - ".dockerignore"
+      - ".gitattributes"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
@@ -23,35 +26,94 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
 
     steps:
+      # 1. Checkout repository and download actual Git LFS files
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
+      # 2. Verify that the required raster files exist and are not LFS pointers
+      - name: Verify aligned rasters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RASTER_DIR="outputs/phase2/aligned"
+
+          if [ ! -d "$RASTER_DIR" ]; then
+            echo "ERROR: Raster directory not found: $RASTER_DIR"
+            exit 1
+          fi
+
+          echo "Aligned raster files:"
+          ls -lah "$RASTER_DIR"
+
+          count=0
+
+          for f in "$RASTER_DIR"/*.tif; do
+            if [ ! -f "$f" ]; then
+              continue
+            fi
+
+            count=$((count + 1))
+            echo "Checking $f"
+
+            if head -n 1 "$f" | grep -q "git-lfs.github.com/spec"; then
+              echo "ERROR: $f is a Git LFS pointer, not the actual raster."
+              exit 1
+            fi
+
+            file "$f"
+          done
+
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: No TIFF files found in $RASTER_DIR"
+            exit 1
+          fi
+
+          echo "Verified $count TIFF files."
+
+      # 3. Set up Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 4. Generate a unique image tag
       - name: Compute tag
         id: meta
-        run: echo "tag=$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          echo "tag=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}" \
+            >> "$GITHUB_OUTPUT"
 
-      # ---------- Azure login ----------
+      # 5. Authenticate with Azure
       - name: Login to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # 6. Log in to Azure Container Registry
       - name: Login to ACR
-        run: az acr login --name ${{ env.ACR_NAME }}
+        run: az acr login --name "${{ env.ACR_NAME }}"
 
+      # 7. Retrieve the ACR login server
       - name: Get ACR login server
         id: acr
+        shell: bash
         run: |
-          echo "server=$(az acr show -n ${{ env.ACR_NAME }} -g ${{ env.AZ_RG }} --query loginServer -o tsv)" >> "$GITHUB_OUTPUT"
+          SERVER=$(az acr show \
+            --name "${{ env.ACR_NAME }}" \
+            --resource-group "${{ env.AZ_RG }}" \
+            --query loginServer \
+            --output tsv)
 
-      # ---------- Build & push ----------
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+
+      # 8. Build the image with the real raster files and push it to ACR
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -65,59 +127,94 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ---------- Deploy to Container Apps ----------
+      # 9. Deploy the image to Azure Container Apps
       - name: Deploy to Azure Container Apps
+        shell: bash
+        env:
+          ACR_SERVER: ${{ steps.acr.outputs.server }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+          FSI_API_KEY: ${{ secrets.FSI_API_KEY }}
         run: |
-          IMAGE="${{ steps.acr.outputs.server }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}"
-          ACR_USER=$(az acr credential show -n ${{ env.ACR_NAME }} --query username -o tsv)
-          ACR_PASS=$(az acr credential show -n ${{ env.ACR_NAME }} --query 'passwords[0].value' -o tsv)
+          set -euo pipefail
 
-          if az containerapp show -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} >/dev/null 2>&1; then
-            echo "Container app exists — updating"
+          IMAGE="$ACR_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+
+          ACR_USER=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query username \
+            --output tsv)
+
+          ACR_PASS=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query 'passwords[0].value' \
+            --output tsv)
+
+          if [ -z "$FSI_API_KEY" ]; then
+            echo "ERROR: FSI_API_KEY GitHub secret is empty or missing."
+            exit 1
+          fi
+
+          if az containerapp show \
+            --name "$ACA_APP" \
+            --resource-group "$AZ_RG" \
+            >/dev/null 2>&1; then
+
+            echo "Container app exists — updating."
 
             az containerapp secret set \
-              -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} \
-              --secrets "fsi-api-key=${{ secrets.FSI_API_KEY }}"
+              --name "$ACA_APP" \
+              --resource-group "$AZ_RG" \
+              --secrets "fsi-api-key=$FSI_API_KEY"
 
             az containerapp registry set \
-              -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} \
-              --server ${{ steps.acr.outputs.server }} \
+              --name "$ACA_APP" \
+              --resource-group "$AZ_RG" \
+              --server "$ACR_SERVER" \
               --username "$ACR_USER" \
               --password "$ACR_PASS"
 
             az containerapp update \
-              -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} \
+              --name "$ACA_APP" \
+              --resource-group "$AZ_RG" \
               --image "$IMAGE" \
               --set-env-vars \
                 "FSI_API_KEY=secretref:fsi-api-key" \
                 "BASE_DIR=." \
                 "PREPROCESS_DIR=./outputs/phase2"
+
           else
-            echo "Container app missing — creating"
+            echo "Container app missing — creating."
 
             az containerapp create \
-              -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} \
-              --environment ${{ env.ACA_ENV }} \
+              --name "$ACA_APP" \
+              --resource-group "$AZ_RG" \
+              --environment "$ACA_ENV" \
               --image "$IMAGE" \
               --target-port 8000 \
               --ingress external \
-              --registry-server ${{ steps.acr.outputs.server }} \
+              --registry-server "$ACR_SERVER" \
               --registry-username "$ACR_USER" \
               --registry-password "$ACR_PASS" \
-              --cpu 2.0 --memory 4.0Gi \
-              --min-replicas 0 --max-replicas 3 \
-              --secrets "fsi-api-key=${{ secrets.FSI_API_KEY }}" \
+              --cpu 2.0 \
+              --memory 4.0Gi \
+              --min-replicas 0 \
+              --max-replicas 3 \
+              --secrets "fsi-api-key=$FSI_API_KEY" \
               --env-vars \
                 "FSI_API_KEY=secretref:fsi-api-key" \
                 "BASE_DIR=." \
                 "PREPROCESS_DIR=./outputs/phase2"
           fi
 
-      # ---------- Report ----------
+      # 10. Report the deployed application URL
       - name: Report URL
+        shell: bash
         run: |
-          FQDN=$(az containerapp show -n ${{ env.ACA_APP }} -g ${{ env.AZ_RG }} \
-            --query properties.configuration.ingress.fqdn -o tsv)
-          echo "### Live: https://${FQDN}" >> "$GITHUB_STEP_SUMMARY"
-          echo ""
-          echo "URL: https://${FQDN}"
+          FQDN=$(az containerapp show \
+            --name "$ACA_APP" \
+            --resource-group "$AZ_RG" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+
+          echo "### Live: https://$FQDN" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: https://$FQDN"

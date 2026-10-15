@@ -39,7 +39,7 @@ logs/
 tmp/
 .cache/
 
-outputs/phase2/aligned/
+# outputs/phase2/aligned/
 outputs/phase2/registered_sar/
 outputs/phase2/sample_points/*.shp
 outputs/phase2/sample_points/*.shx

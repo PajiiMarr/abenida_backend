@@ -38,7 +38,6 @@ register_sar_to_dem.py
 train_model.py
 pyGWRx/
 
-# --- Heavy Phase 2 intermediates (excluded from the phase2 COPY) ---
 outputs/phase2/registered_sar/
 outputs/phase2/sample_points/
 outputs/phase2/aligned/*.aux.xml

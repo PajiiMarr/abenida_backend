@@ -32,7 +32,7 @@ TOPOGRAPHIC = {
 
 HYDROLOGICAL = {
     "distance_to_river": BASE_DIR / "HYDROLOGICAL DATAS/qgis/Zamboanga_Distance_to_river_1.tiff",
-    "drainage_density": BASE_DIR / "HYDROLOGICAL DATAS/qgis/Zamboanga_Drainage_Density_1.tif", 
+    "drainage_density": BASE_DIR / "HYDROLOGICAL DATAS/qgis/Zamboanga_Drainage_Density_1.tif",
     "river_network": BASE_DIR / "HYDROLOGICAL DATAS/spatialdata/ZC_RiverCreeksnew.shp",
     "watersheds": BASE_DIR / "HYDROLOGICAL DATAS/spatialdata/Watershed_Areas.shp",
     "phl_rivers": BASE_DIR / "HYDROLOGICAL DATAS/phl_rivl_250k_namria/phl_rivl_250k_NAMRIA.shp",

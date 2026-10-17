@@ -1,6 +1,6 @@
 model,bandwidth,fixed,r2,aicc,n,k,max_degree,max_terms,penalty,calibrated,bandwidths_min,bandwidths_max,n_bandwidths,n_iter,n_estimators
-gwr,549.0,False,0.15636489802392206,4290.5041069329645,3200.0,10.0,,,,,,,,,
+gwr,384.0,False,0.20573084615739,4171.457597811643,3200.0,10.0,,,,,,,,,
 mars,,,,,,,2.0,21.0,3.0,,,,,,
 svm,,,,,,,,,,True,,,,,
-mgwr,,,0.3379752530567629,,3200.0,10.0,,,,,32.0,3168.0,10.0,4.0,
+mgwr,,,0.3601159578028642,,3200.0,10.0,,,,,32.0,3168.0,10.0,2.0,
 stacking,,,,,,,,,,,,,,,3.0

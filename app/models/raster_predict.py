@@ -11,7 +11,7 @@ distance to river > 25 m, on land), so it only predicts there:
 
 import logging
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import rasterio
@@ -97,16 +97,34 @@ def flood_able_mask(arrays: Dict[str, np.ndarray]):
     return land, channel, domain
 
 
+def _training_fill(name: str) -> Optional[float]:
+    """Fill value used during training (feature_engineering.get_training_stats), if available."""
+    try:
+        from app.models.feature_engineering import get_training_stats
+        v = get_training_stats()["fill"].get(name)
+        return float(v) if v is not None and np.isfinite(v) else None
+    except Exception:
+        return None
+
+
 def _fill_median(arrays: Dict[str, np.ndarray], domain: np.ndarray) -> None:
-    """Mirror training: NaN in selected raw features -> median over the flood-able domain."""
+    """
+    Mirror training: NaN in selected raw features -> training fill value.
+    Falls back to the median over the flood-able domain if the stats are unavailable.
+    """
     for name in FILL_MEDIAN_FEATURES:
         a = arrays.get(name)
         if a is None or not domain.any():
             continue
-        med = np.nanmedian(a[domain])
+        fill = _training_fill(name)
+        if fill is None:
+            fill = float(np.nanmedian(a[domain]))
+            src = "domain median"
+        else:
+            src = "training stats"
         missing = domain & ~np.isfinite(a)
-        a[missing] = med
-        logger.info(f"Filled {int(missing.sum()):,} NaN '{name}' pixels with median {med:.2f}")
+        a[missing] = fill
+        logger.info(f"Filled {int(missing.sum()):,} NaN '{name}' pixels with {fill:.2f} ({src})")
 
 
 def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_ROWS) -> Tuple[np.ndarray, dict]:

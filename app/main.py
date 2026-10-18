@@ -5,7 +5,7 @@ FastAPI backend for serving flood susceptibility maps and model predictions.
 """
 
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import json
 import logging
 import os
@@ -21,11 +21,19 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.models.loader import registry
-from app.models.feature_service import build_vector_at_point
+from app.models.feature_engineering import build_feature_matrix
+from app.models.feature_service import sample_raw_features
 from app.models.raster_predict import (
     predict_full_raster,
     classify_raster,
+    quantile_breaks,
+    class_meta,
     save_geotiff,
+    HAND_MIN,
+    HAND_MAX,
+    SLOPE_MAX,
+    CHANNEL_BUFFER_M,
+    OUTSIDE_VALUE,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +42,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Flood Susceptibility API",
     description="Zamboanga City Flood Susceptibility Mapping System",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 app.add_middleware(
@@ -70,10 +78,10 @@ def require_key(x_api_key: str = Header(..., description="API key")):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-
 BASE_DIR = Path(os.environ.get("BASE_DIR") or ".")
 OUTPUT_DIR = Path(os.environ.get("PREPROCESS_DIR") or BASE_DIR / "outputs/phase2")
 PHASE3_DIR = BASE_DIR / "outputs/phase3"
+BREAKS_PATH = PHASE3_DIR / "risk_breaks.json"
 
 
 # ---------- Phase 2 data (optional; API works without it) ----------
@@ -138,22 +146,54 @@ class GenerateRasterRequest(BaseModel):
 
 
 # ---------- Risk classification ----------
-# Bins MUST match ModelTrainingPipeline.risk_bins in app/training/pipeline.py.
+# Class boundaries are shared between point predictions and the risk-class
+# raster: generate_susceptibility() writes them to outputs/phase3/risk_breaks.json
+# and classify_risk() reads them back. Until that file exists the defaults apply.
+DEFAULT_BREAKS = [0.40, 0.55, 0.70]
+
 RISK_LEVELS = [
-    {"index": 0, "label": "Low Risk",       "color": "#91bfdb", "upper": 0.25},
-    {"index": 1, "label": "Medium Risk",    "color": "#fee090", "upper": 0.50},
-    {"index": 2, "label": "High Risk",      "color": "#fc8d59", "upper": 0.75},
-    {"index": 3, "label": "Very High Risk", "color": "#d73027", "upper": 1.00},
+    {"index": 0, "label": "Low Risk",       "color": "#91bfdb"},
+    {"index": 1, "label": "Medium Risk",    "color": "#fee090"},
+    {"index": 2, "label": "High Risk",      "color": "#fc8d59"},
+    {"index": 3, "label": "Very High Risk", "color": "#d73027"},
 ]
+
+_BREAKS_CACHE: Dict[str, Any] = {"mtime": None, "breaks": list(DEFAULT_BREAKS)}
+
+
+def _load_breaks() -> List[float]:
+    """Current class breaks (3 values); re-read whenever the JSON file changes."""
+    try:
+        mtime = BREAKS_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return list(DEFAULT_BREAKS)
+    if _BREAKS_CACHE["mtime"] != mtime:
+        try:
+            b = [float(x) for x in json.loads(BREAKS_PATH.read_text())["breaks"]]
+            if len(b) != 3:
+                raise ValueError(f"expected 3 breaks, got {len(b)}")
+            _BREAKS_CACHE.update(mtime=mtime, breaks=b)
+        except Exception as e:
+            logger.warning(f"Could not read {BREAKS_PATH}: {e}; using defaults")
+            _BREAKS_CACHE.update(mtime=mtime, breaks=list(DEFAULT_BREAKS))
+    return list(_BREAKS_CACHE["breaks"])
 
 
 def classify_risk(p: float) -> dict:
-    """Map a probability to a risk class using the same bins as training."""
+    """Map a probability to a risk class using the same breaks as the raster."""
     p = float(np.clip(p, 0.0, 1.0))
-    for r in RISK_LEVELS:
-        if p <= r["upper"]:
-            return r
-    return RISK_LEVELS[-1]
+    idx = int(np.digitize(p, _load_breaks(), right=False))
+    return RISK_LEVELS[idx]
+
+
+def _risk_mapping() -> List[dict]:
+    b = _load_breaks()
+    lowers = [0.0] + b
+    uppers = b + [1.0]
+    return [
+        {**r, "lower": lo, "upper": hi}
+        for r, lo, hi in zip(RISK_LEVELS, lowers, uppers)
+    ]
 
 
 def _risk_payload(p: float) -> dict:
@@ -165,6 +205,49 @@ def _risk_payload(p: float) -> dict:
         "risk_index": r["index"],
         "color": r["color"],
     }
+
+
+# ---------- Flood-able terrain gating ----------
+# The models were trained only on flood-able terrain (see create_sample_points
+# in app/preprocessing/sar_processor.py). Outside it they would extrapolate.
+def _domain_check(raw: Dict[str, float]) -> Tuple[Optional[str], Optional[str]]:
+    """Return (kind, note) if the point is outside the modelled domain, else (None, None)."""
+    d = raw.get("distance_to_river")
+    hand = raw.get("hand")
+    slope = raw.get("slope")
+
+    if d is not None and np.isfinite(d) and d <= CHANNEL_BUFFER_M:
+        return "channel", "River channel (not modelled)"
+
+    if hand is None or slope is None or not np.isfinite(hand) or not np.isfinite(slope):
+        return None, None
+
+    if not (HAND_MIN <= hand <= HAND_MAX) or slope > SLOPE_MAX:
+        return (
+            "outside",
+            f"Outside flood-able terrain (HAND {HAND_MIN:.0f}-{HAND_MAX:.0f} m and "
+            f"slope <= {SLOPE_MAX:.0f} deg required)",
+        )
+    return None, None
+
+
+def _special_payload(kind: str, note: str) -> dict:
+    if kind == "channel":
+        return {
+            "probability": None,
+            "risk_class": "River channel",
+            "risk_index": -1,
+            "color": "#4575b4",
+            "in_domain": False,
+            "note": note,
+        }
+    return {**_risk_payload(OUTSIDE_VALUE), "in_domain": False, "note": note}
+
+
+def _vector_from_raw(raw: Dict[str, float], names: List[str]) -> np.ndarray:
+    """Build a (1, n_features) float32 vector from already-sampled raw values."""
+    vec = build_feature_matrix(raw, names)
+    return np.asarray(vec, dtype=np.float32).reshape(1, -1)
 
 
 def _registry_models() -> list:
@@ -297,6 +380,27 @@ class _SpatialAdapter:
 
 
 # ---------- Feature attribution (model-agnostic) ----------
+_BASELINE: Optional[np.ndarray] = None
+
+
+def _baseline(names: List[str]) -> np.ndarray:
+    """
+    Mean of the SCALED training features (the 'average' point in model space).
+
+    The scaler is MinMax, so 0.0 is the training minimum, not the mean; ablating
+    a feature to 0.0 would therefore mislead. We use the column means of the
+    standardized training dataset instead.
+    """
+    global _BASELINE
+    if _BASELINE is None or len(_BASELINE) != len(names):
+        try:
+            df = pd.read_csv(OUTPUT_DIR / "full_dataset_engineered_standardized.csv")
+            _BASELINE = df[names].mean().to_numpy(dtype=np.float64)
+        except Exception as e:
+            logger.warning(f"Could not compute attribution baseline ({e}); using 0.5")
+            _BASELINE = np.full(len(names), 0.5, dtype=np.float64)
+    return _BASELINE
+
 
 def _predict_proba_single(model, x_scaled: np.ndarray) -> float:
     """Run a single-row prediction, returning P(class=1)."""
@@ -321,14 +425,10 @@ def _feature_attributions(
 
         contribution_i = p(x) - p(x with x_i = training_mean_i)
 
-    In standardized feature space the training mean is 0.0, so ablating a
-    feature means setting its scaled value back to zero.
+    The training mean is taken in scaled space (see _baseline).
 
     Positive contribution  -> feature pushed the prediction toward flood.
     Negative contribution  -> feature pushed the prediction toward non-flood.
-
-    The magnitude |contribution| is the strength of the feature's influence
-    on *this point's* prediction.
 
     Returns the top_k features sorted by |contribution| descending.
     """
@@ -336,6 +436,7 @@ def _feature_attributions(
     if x_scaled.ndim == 1:
         x_scaled = x_scaled.reshape(1, -1)
 
+    base = _baseline(names)
     p_full = _predict_proba_single(model, x_scaled)
 
     contributions: List[Dict[str, Any]] = []
@@ -343,7 +444,7 @@ def _feature_attributions(
         if i >= x_scaled.shape[1]:
             break
         x_ablated = x_scaled.copy()
-        x_ablated[0, i] = 0.0  # training mean in scaled space
+        x_ablated[0, i] = base[i]
         try:
             p_ablated = _predict_proba_single(model, x_ablated)
         except Exception:
@@ -366,7 +467,7 @@ def _feature_attributions(
 async def root():
     return {
         "message": "Flood Susceptibility API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "endpoints": [
             "/api/status",
             "/api/models",
@@ -406,7 +507,13 @@ async def list_models():
         "is_ready": bool(getattr(registry, "is_ready", False)),
         "feature_names": _registry_feature_names(),
         "n_features": len(_registry_feature_names()),
-        "risk_mapping": getattr(registry, "risk_mapping", RISK_LEVELS),
+        "risk_mapping": _risk_mapping(),
+        "flood_able_terrain": {
+            "hand_min_m": HAND_MIN,
+            "hand_max_m": HAND_MAX,
+            "slope_max_deg": SLOPE_MAX,
+            "channel_buffer_m": CHANNEL_BUFFER_M,
+        },
     }
 
 
@@ -466,6 +573,10 @@ async def predict_point(req: PredictPointRequest):
     If `features` are provided, uses them directly (must be in feature_names
     order). Otherwise samples the aligned rasters.
 
+    Points outside the modelled domain (river channel, or terrain with
+    HAND > 15 m / slope > 5 deg) are NOT passed to the model: the response has
+    in_domain=false and an explanatory `note`.
+
     When `explain=true` (default), the response includes `top_factors`: the
     5 features whose mean-ablation changes the predicted probability the
     most, with direction ("increases" / "decreases").
@@ -478,14 +589,6 @@ async def predict_point(req: PredictPointRequest):
         raise HTTPException(404, f"Model '{req.model}' not loaded")
 
     names = _registry_feature_names()
-
-    if req.model in SPATIAL_MODELS:
-        try:
-            model = _SpatialAdapter(model, names, [(req.lat, req.lng)])
-        except Exception as e:
-            raise HTTPException(
-                422, f"Could not build spatial context for '{req.model}': {e}"
-            )
 
     if req.features is not None:
         missing = [k for k in names if k not in req.features]
@@ -501,9 +604,31 @@ async def predict_point(req: PredictPointRequest):
         )
     else:
         try:
-            x = build_vector_at_point(req.lat, req.lng, names)
+            raw = sample_raw_features(req.lat, req.lng)
         except Exception as e:
             raise HTTPException(422, f"Could not sample features at point: {e}")
+
+        kind, note = _domain_check(raw)
+        if kind is not None:
+            return {
+                "lat": req.lat,
+                "lng": req.lng,
+                "model": req.model,
+                **_special_payload(kind, note),
+            }
+
+        try:
+            x = _vector_from_raw(raw, names)
+        except Exception as e:
+            raise HTTPException(422, f"Could not build feature vector at point: {e}")
+
+    if req.model in SPATIAL_MODELS:
+        try:
+            model = _SpatialAdapter(model, names, [(req.lat, req.lng)])
+        except Exception as e:
+            raise HTTPException(
+                422, f"Could not build spatial context for '{req.model}': {e}"
+            )
 
     try:
         x_scaled = _apply_scaler(x)
@@ -526,6 +651,7 @@ async def predict_point(req: PredictPointRequest):
         "lat": req.lat,
         "lng": req.lng,
         "model": req.model,
+        "in_domain": True,
         **_risk_payload(proba),
     }
 
@@ -546,6 +672,9 @@ async def predict_batch(req: PredictBatchRequest):
     """
     Predict flood susceptibility for a list of (lat, lng) points.
 
+    Points outside the modelled domain (river channel / non flood-able terrain)
+    are answered directly with in_domain=false and are not sent to the model.
+
     When `explain=true`, each result also includes `top_factors` (top 5
     mean-ablation attributions). This costs O(n_features) extra model
     calls per point — use it for small batches.
@@ -565,44 +694,52 @@ async def predict_batch(req: PredictBatchRequest):
     rows = []
     row_idx = []
     errors: Dict[int, str] = {}
+    special: Dict[int, dict] = {}
     for i, p in enumerate(req.points):
         try:
-            v = build_vector_at_point(p["lat"], p["lng"], names)
-            rows.append(np.asarray(v, dtype=np.float32).ravel())
+            raw = sample_raw_features(p["lat"], p["lng"])
+            kind, note = _domain_check(raw)
+            if kind is not None:
+                special[i] = _special_payload(kind, note)
+                continue
+            rows.append(_vector_from_raw(raw, names).ravel())
             row_idx.append(i)
         except Exception as e:
             errors[i] = str(e)
 
-    if not rows:
+    if not rows and not special:
         raise HTTPException(422, f"No points could be sampled: {errors}")
 
-    X = np.vstack(rows)
-
-    # Spatial models need one coordinate per surviving row.
     raw_model = model
-    if req.model in SPATIAL_MODELS:
+    probas = np.array([])
+
+    if rows:
+        X = np.vstack(rows)
+
+        # Spatial models need one coordinate per surviving row.
+        if req.model in SPATIAL_MODELS:
+            try:
+                model = _SpatialAdapter(
+                    raw_model, names,
+                    [(req.points[i]["lat"], req.points[i]["lng"]) for i in row_idx],
+                )
+            except Exception as e:
+                raise HTTPException(
+                    422, f"Could not build spatial context for '{req.model}': {e}"
+                )
+
         try:
-            model = _SpatialAdapter(
-                raw_model, names,
-                [(req.points[i]["lat"], req.points[i]["lng"]) for i in row_idx],
-            )
+            X_scaled = _apply_scaler(X)
         except Exception as e:
-            raise HTTPException(
-                422, f"Could not build spatial context for '{req.model}': {e}"
-            )
+            raise HTTPException(500, f"Scaling failed: {e}")
 
-    try:
-        X_scaled = _apply_scaler(X)
-    except Exception as e:
-        raise HTTPException(500, f"Scaling failed: {e}")
-
-    try:
-        if hasattr(model, "predict_proba"):
-            probas = model.predict_proba(X_scaled)[:, 1]
-        else:
-            probas = np.asarray(model.predict(X_scaled)).ravel()
-    except Exception as e:
-        raise HTTPException(500, f"Prediction failed: {e}")
+        try:
+            if hasattr(model, "predict_proba"):
+                probas = model.predict_proba(X_scaled)[:, 1]
+            else:
+                probas = np.asarray(model.predict(X_scaled)).ravel()
+        except Exception as e:
+            raise HTTPException(500, f"Prediction failed: {e}")
 
     results = [None] * len(req.points)
     for local_i, original_i in enumerate(row_idx):
@@ -619,6 +756,7 @@ async def predict_batch(req: PredictBatchRequest):
         entry: Dict[str, Any] = {
             "lat": p["lat"],
             "lng": p["lng"],
+            "in_domain": True,
             **_risk_payload(proba),
         }
 
@@ -642,13 +780,18 @@ async def predict_batch(req: PredictBatchRequest):
 
         results[original_i] = entry
 
+    for i, payload in special.items():
+        p = req.points[i]
+        results[i] = {"lat": p["lat"], "lng": p["lng"], **payload}
+
     for i, msg in errors.items():
         p = req.points[i]
         results[i] = {"lat": p["lat"], "lng": p["lng"], "error": msg}
 
     return {
         "count": len(results),
-        "n_ok": len(row_idx),
+        "n_ok": len(row_idx) + len(special),
+        "n_out_of_domain": len(special),
         "n_failed": len(errors),
         "results": results,
     }
@@ -659,7 +802,7 @@ async def predict_batch(req: PredictBatchRequest):
     dependencies=[Depends(require_key)],
 )
 async def generate_susceptibility(req: GenerateRasterRequest):
-    """Run full-raster prediction and save GeoTIFF (probability + risk classes)."""
+    """Run full-raster prediction and save GeoTIFFs (probability + risk classes)."""
     model = registry.get(req.model)
     if model is None:
         raise HTTPException(404, f"Model '{req.model}' not loaded")
@@ -684,22 +827,27 @@ async def generate_susceptibility(req: GenerateRasterRequest):
     out_proba = PHASE3_DIR / f"susceptibility_{req.model}.tif"
     save_geotiff(raster, meta, out_proba)
 
-    classes = classify_raster(raster)
-    class_meta = meta.copy()
-    class_meta.update(dtype="int8", nodata=-1)
+    # One set of breaks for the raster AND for point predictions.
+    breaks = [float(b) for b in quantile_breaks(raster)]
+    BREAKS_PATH.write_text(json.dumps({"model": req.model, "breaks": breaks}, indent=2))
+
+    classes = classify_raster(raster, breaks)
     out_classes = PHASE3_DIR / f"risk_classes_{req.model}.tif"
-    save_geotiff(classes, class_meta, out_classes)
+    save_geotiff(classes, class_meta(meta), out_classes)
 
     finite = raster[np.isfinite(raster)]
+    flood_able = raster[np.isfinite(raster) & (raster > OUTSIDE_VALUE)]
     return {
         "model": req.model,
         "probability_raster": str(out_proba),
         "risk_class_raster": str(out_classes),
+        "risk_breaks": breaks,
         "shape": list(raster.shape),
         "valid_pixels": int(finite.size),
-        "probability_min": float(finite.min()) if finite.size else None,
-        "probability_max": float(finite.max()) if finite.size else None,
-        "probability_mean": float(finite.mean()) if finite.size else None,
+        "flood_able_pixels": int(flood_able.size),
+        "probability_min": float(flood_able.min()) if flood_able.size else None,
+        "probability_max": float(flood_able.max()) if flood_able.size else None,
+        "probability_mean": float(flood_able.mean()) if flood_able.size else None,
     }
 
 
@@ -727,14 +875,21 @@ async def susceptibility_at(lat: float, lng: float, model: str = "stacking"):
         proba = float(src.read(1, window=((row, row + 1), (col, col + 1)))[0, 0])
 
     if not np.isfinite(proba):
-        raise HTTPException(422, "No data at that pixel")
+        raise HTTPException(422, "No data at that pixel (sea or river channel)")
 
-    return {
+    payload = {
         "lat": lat,
         "lng": lng,
         "model": model,
+        "in_domain": proba > OUTSIDE_VALUE,
         **_risk_payload(proba),
     }
+    if proba <= OUTSIDE_VALUE:
+        payload["note"] = (
+            f"Outside flood-able terrain (HAND {HAND_MIN:.0f}-{HAND_MAX:.0f} m and "
+            f"slope <= {SLOPE_MAX:.0f} deg required)"
+        )
+    return payload
 
 
 # ---------- File download ----------

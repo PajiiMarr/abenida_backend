@@ -158,11 +158,18 @@ class PreprocessingPipeline:
         meta = processor.get_sar_metadata()
         logger.info(f"Using SAR metadata: CRS={meta.get('crs')}")
         
-        # ===== IMPROVED: Use stratified sampling =====
-        # Options: 'stratified', 'cluster', 'boundary', 'random'
+        # ===== Read counts from config.py SAMPLE_PARAMS =====
+        flood_points = SAMPLE_PARAMS["flood_points"]
+        non_flood_points = SAMPLE_PARAMS["non_flood_points"]
+        total_samples = flood_points + non_flood_points
+        flood_ratio = flood_points / total_samples
+
+        logger.info(f"Sampling from config: {flood_points} flood + {non_flood_points} "
+                    f"non-flood = {total_samples} total (ratio={flood_ratio:.2f})")
+        
         self.sample_points, self.sample_labels = processor.create_sample_points(
-            n_samples=4000,
-            flood_ratio=0.5,
+            n_samples=total_samples,
+            flood_ratio=flood_ratio,
             sampling_method='stratified'  # Best for spatial coverage
         )
         

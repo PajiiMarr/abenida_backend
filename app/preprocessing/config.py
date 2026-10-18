@@ -182,8 +182,8 @@ FEATURES_TO_EXTRACT = RAW_FEATURES_TO_EXTRACT
 
 
 SAMPLE_PARAMS = {
-    "flood_points": 2000,
-    "non_flood_points": 2000,
+    "flood_points": 10000,
+    "non_flood_points": 10000,
     "random_seed": 42,
     "test_size": 0.2,
 }

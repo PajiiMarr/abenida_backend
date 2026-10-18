@@ -205,7 +205,7 @@ class SARProcessor:
         return np.array(selected_indices)
     
     def create_sample_points(self, flood_inventory: Dict = None, 
-                             n_samples: int = 4000,
+                             n_samples: int = 20000, 
                              flood_ratio: float = 0.5,
                              sampling_method: str = 'stratified',
                              land_mask_path: Path = Path("./outputs/phase2/aligned/chirps_aligned.tif")

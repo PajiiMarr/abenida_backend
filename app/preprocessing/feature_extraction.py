@@ -120,7 +120,7 @@ class FeatureExtractor:
                 fill_value = np.median(valid_values)
             else:
                 fill_value = 0.0
-            values = np.where(np.isnan(values) | np.isinf(values), fill_value, values)
+            values = np.where(values <= -9990, np.nan, values)
         
         return values.astype(np.float32)
     

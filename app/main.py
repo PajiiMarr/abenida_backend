@@ -253,7 +253,7 @@ def _apply_scaler(x: np.ndarray) -> np.ndarray:
 SPATIAL_MODELS = {"gwr", "mgwr"}
 # Must match the 'GWR/MGWR reduced feature set' line in the training log.
 SPATIAL_COLS = ["dem", "slope", "aspect", "twi", "hand",
-                "flow_accumulation", "chirps", "gpm"]
+                "flow_accumulation", "distance_to_river", "chirps", "gpm"]
 _GRID: Dict[str, Any] = {}
 
 

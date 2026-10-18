@@ -207,13 +207,42 @@ class SARProcessor:
     def create_sample_points(self, flood_inventory: Dict = None, 
                              n_samples: int = 4000,
                              flood_ratio: float = 0.5,
-                             sampling_method: str = 'stratified') -> Tuple[np.ndarray, np.ndarray]:
-        """Create balanced sample points using improved spatial sampling"""
+                             sampling_method: str = 'stratified',
+                             land_mask_path: Path = Path("./outputs/phase2/aligned/chirps_aligned.tif")
+                             ) -> Tuple[np.ndarray, np.ndarray]:
+        """Create balanced sample points on the aligned 12.5 m grid (flood-able land only)"""
+        from rasterio.warp import reproject, Resampling
+        from rasterio.coords import BoundingBox
+
         if flood_inventory is None:
             flood_inventory = self.flood_inventory
         
         if flood_inventory is None:
             raise ValueError("No flood inventory! Call generate_flood_inventory() first.")
+        
+        # Land mask + target grid: aligned rasters (CHIRPS is land-only, nodata = sea)
+        land_mask_path = Path(land_mask_path)
+        if not land_mask_path.exists():
+            raise FileNotFoundError(f"Land mask raster not found: {land_mask_path}")
+        with rasterio.open(land_mask_path) as src:
+            land = ~np.ma.getmaskarray(src.read(1, masked=True))
+            dst_transform, dst_crs = src.transform, src.crs
+        src_transform = self.metadata['transform']
+        src_crs = self.metadata['crs']
+        logger.info(f"Land mask: {land.sum():,} land pixels of {land.size:,} ({land.mean()*100:.1f}%)")
+        
+        # Terrain mask: keep only flood-able terrain (removes radar shadow/layover false positives)
+        def _load_aligned(name):
+            with rasterio.open(land_mask_path.parent / f"{name}_aligned.tif") as s:
+                return s.read(1, masked=True).astype(np.float32).filled(np.nan)
+        
+        hand_r = _load_aligned("hand")
+        slope_r = _load_aligned("slope")
+        dist_r = _load_aligned("distance_to_river")
+        terrain_ok = np.isfinite(hand_r) & (hand_r >= 0) & (hand_r <= 15) & (slope_r <= 5) & (dist_r > 25)
+        del hand_r, slope_r
+        logger.info(f"Terrain mask (0 <= HAND <= 15 m, slope <= 5 deg): "
+                    f"{terrain_ok.sum():,} pixels ({terrain_ok.mean()*100:.1f}%)")
         
         n_flood = int(n_samples * flood_ratio)
         n_non_flood = n_samples - n_flood
@@ -222,7 +251,25 @@ class SARProcessor:
         all_non_flood_points = []
         
         for event, info in flood_inventory.items():
-            flood_map = info['flood_map']
+            raw_flood_map = info['flood_map']
+            
+            # Resample the SAR flood map onto the aligned grid so (row, col) match the feature rasters
+            cover = np.ones(land.shape, dtype=bool)
+            if raw_flood_map.shape != land.shape:
+                resampled = np.zeros(land.shape, dtype=raw_flood_map.dtype)
+                reproject(raw_flood_map, resampled,
+                          src_transform=src_transform, src_crs=src_crs,
+                          dst_transform=dst_transform, dst_crs=dst_crs,
+                          resampling=Resampling.nearest)
+                covered = np.zeros(land.shape, dtype=np.uint8)
+                reproject(np.ones(raw_flood_map.shape, dtype=np.uint8), covered,
+                          src_transform=src_transform, src_crs=src_crs,
+                          dst_transform=dst_transform, dst_crs=dst_crs,
+                          resampling=Resampling.nearest)
+                raw_flood_map, cover = resampled, covered.astype(bool)
+            
+            # Sea / uncovered / non-flood-able pixels become -1: neither flood (>0) nor non-flood (==0)
+            flood_map = np.where(land & cover & terrain_ok, raw_flood_map.astype(np.int16), -1)
             
             flood_rows, flood_cols = np.where(flood_map > 0)
             flood_coords = np.column_stack([flood_rows, flood_cols])
@@ -232,7 +279,10 @@ class SARProcessor:
             non_flood_coords = np.column_stack([non_flood_rows, non_flood_cols])
             non_flood_labels = np.zeros(len(non_flood_coords))
             
-            logger.info(f"{event}: {len(flood_coords)} flood, {len(non_flood_coords)} non-flood pixels")
+            removed_sea = int(np.sum((raw_flood_map > 0) & ~land))
+            removed_terrain = int(np.sum((raw_flood_map > 0) & land & ~terrain_ok))
+            logger.info(f"{event}: {len(flood_coords)} flood, {len(non_flood_coords)} non-flood pixels "
+                        f"({removed_sea:,} sea and {removed_terrain:,} steep/high 'flood' pixels removed)")
             
             if len(flood_coords) > 0:
                 if sampling_method == 'stratified':
@@ -298,6 +348,13 @@ class SARProcessor:
                 all_non_flood_points.append(non_flood_samples)
                 logger.info(f"  Sampled {len(non_flood_samples)} non-flood points using {sampling_method}")
         
+        # Sample points are now in aligned-grid (row, col); georeference them accordingly
+        self.metadata['transform'] = dst_transform
+        self.metadata['crs'] = dst_crs.to_string()
+        self.metadata['bounds'] = BoundingBox(
+            *rasterio.transform.array_bounds(land.shape[0], land.shape[1], dst_transform)
+        )
+        
         if all_flood_points:
             flood_points = np.vstack(all_flood_points)
         else:
@@ -351,6 +408,9 @@ class SARProcessor:
         logger.info(f"  Sampling method: {sampling_method}")
         
         return sample_points, sample_labels
+    
+    
+
     
     def train_test_split(self, sample_points: np.ndarray = None, 
                          sample_labels: np.ndarray = None,

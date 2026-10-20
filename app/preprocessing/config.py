@@ -72,6 +72,11 @@ SAR_REGISTERED = {
         "ndfi":      REGISTERED_SAR_DIR / "jan31_2023_ndfi_registered.tif",
         "diff_db":   REGISTERED_SAR_DIR / "jan31_2023_diff_db_registered.tif",
     },
+    "aug_2023": {
+        "flood_map": REGISTERED_SAR_DIR / "aug_2023_flood_map_registered.tif",
+        "ndfi":      REGISTERED_SAR_DIR / "aug_2023_ndfi_registered.tif",
+        "diff_db":   REGISTERED_SAR_DIR / "aug_2023_diff_db_registered.tif",
+    },
 }
 
 FLOOD_EVENTS = {
@@ -110,6 +115,15 @@ FLOOD_EVENTS = {
         "post_date": datetime(2023, 2, 5),
         "days_before": 7,
         "days_after": 5,
+    },
+    "aug_2023": {
+        "name": "August 12, 2023 (Southwest Monsoon)",
+        "date": datetime(2023, 8, 12),
+        "sar_key": "aug_2023",
+        "pre_date": datetime(2023, 8, 4),
+        "post_date": datetime(2023, 8, 16),
+        "days_before": 8,
+        "days_after": 4,
     },
 }
 

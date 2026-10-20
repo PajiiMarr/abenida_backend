@@ -67,6 +67,11 @@ SAR_REGISTERED = {
         "ndfi":      REGISTERED_SAR_DIR / "jan_2023_ndfi_registered.tif",
         "diff_db":   REGISTERED_SAR_DIR / "jan_2023_diff_db_registered.tif",
     },
+    "jan31_2023": {
+        "flood_map": REGISTERED_SAR_DIR / "jan31_2023_flood_map_registered.tif",
+        "ndfi":      REGISTERED_SAR_DIR / "jan31_2023_ndfi_registered.tif",
+        "diff_db":   REGISTERED_SAR_DIR / "jan31_2023_diff_db_registered.tif",
+    },
 }
 
 FLOOD_EVENTS = {
@@ -96,6 +101,15 @@ FLOOD_EVENTS = {
         "post_date": datetime(2023, 1, 12),
         "days_before": 11,
         "days_after": 1,
+    },
+    "jan31_2023": {
+        "name": "January 31, 2023 (Localized Thunderstorms)",
+        "date": datetime(2023, 1, 31),
+        "sar_key": "jan31_2023",
+        "pre_date": datetime(2023, 1, 24),
+        "post_date": datetime(2023, 2, 5),
+        "days_before": 7,
+        "days_after": 5,
     },
 }
 

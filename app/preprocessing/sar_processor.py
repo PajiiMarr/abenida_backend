@@ -38,7 +38,7 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        events = ['may_2021', 'oct_2022', 'jan_2023']
+        events = ['may_2021', 'oct_2022', 'jan_2023', 'jan31_2023']
         sar_data = {}
         
         for event in events:

@@ -23,10 +23,10 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DEM_PATH = BASE_DIR / "TOPOGRAPHIC DATAS/Zamboanga_DEM.tif"
 
 SAR_EVENTS = {
-    'aug_2023': {
-        'flood_map': BASE_DIR / "SAR DATAS/August 12, 2023/outputs/flood_map.tif",
-        'ndfi':      BASE_DIR / "SAR DATAS/August 12, 2023/outputs/ndfi.tif",
-        'diff_db':   BASE_DIR / "SAR DATAS/August 12, 2023/outputs/diff_db.tif",
+    'jun_2024': {
+        'flood_map': BASE_DIR / "SAR DATAS/June 26, 2024/outputs/flood_map.tif",
+        'ndfi':      BASE_DIR / "SAR DATAS/June 26, 2024/outputs/ndfi.tif",
+        'diff_db':   BASE_DIR / "SAR DATAS/June 26, 2024/outputs/diff_db.tif",
     },
 }
 

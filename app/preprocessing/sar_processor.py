@@ -18,12 +18,6 @@ logger = logging.getLogger(__name__)
 class SARProcessor:
     """
     SAR Data Processor for flood inventory generation
-    
-    Improved sampling strategies:
-    1. Spatial grid stratification
-    2. Proximity-based sampling (flood boundaries)
-    3. Topographic stratification
-    4. Balanced sampling with spatial coverage
     """
     
     def __init__(self, sar_dir: Path = Path("./outputs/phase2/registered_sar")):
@@ -38,7 +32,7 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        events = ['may_2021', 'oct_2022', 'jan_2023', 'jan31_2023', 'aug_2023', 'jun_2024']
+        events = ['may_2021', 'oct_2022', 'jan_2023', 'jan31_2023', 'aug_2023', 'jun_2024', 'jul_2024']
         sar_data = {}
         
         for event in events:
@@ -408,9 +402,6 @@ class SARProcessor:
         logger.info(f"  Sampling method: {sampling_method}")
         
         return sample_points, sample_labels
-    
-    
-
     
     def train_test_split(self, sample_points: np.ndarray = None, 
                          sample_labels: np.ndarray = None,

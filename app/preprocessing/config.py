@@ -82,6 +82,11 @@ SAR_REGISTERED = {
         "ndfi":      REGISTERED_SAR_DIR / "jun_2024_ndfi_registered.tif",
         "diff_db":   REGISTERED_SAR_DIR / "jun_2024_diff_db_registered.tif",
     },
+    "jul_2024": {
+        "flood_map": REGISTERED_SAR_DIR / "jul_2024_flood_map_registered.tif",
+        "ndfi":      REGISTERED_SAR_DIR / "jul_2024_ndfi_registered.tif",
+        "diff_db":   REGISTERED_SAR_DIR / "jul_2024_diff_db_registered.tif",
+    },
 }
 
 FLOOD_EVENTS = {
@@ -138,6 +143,15 @@ FLOOD_EVENTS = {
         "post_date": datetime(2024, 7, 5),
         "days_before": 3,
         "days_after": 9,
+    },
+    "jul_2024": {
+        "name": "July 12-16, 2024 (LPA & ITCZ)",
+        "date": datetime(2024, 7, 14), # midpoint of event
+        "sar_key": "jul_2024",
+        "pre_date": datetime(2024, 7, 5),
+        "post_date": datetime(2024, 7, 17),
+        "days_before": 9,
+        "days_after": 1,
     },
 }
 

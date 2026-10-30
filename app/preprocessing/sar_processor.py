@@ -32,7 +32,7 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        events = ['may_2021', 'oct_2022', 'jan_2023', 'jan31_2023', 'aug_2023', 'jun_2024', 'jul_2024']
+        events = ['oct_2022', 'jan_2023', 'jul_2024']
         sar_data = {}
         
         for event in events:
@@ -198,22 +198,23 @@ class SARProcessor:
         
         return np.array(selected_indices)
     
-    def create_sample_points(self, flood_inventory: Dict = None, 
-                             n_samples: int = 20000, 
+    def create_sample_points(self, flood_inventory: Dict = None,
+                             n_samples: int = 20000,
                              flood_ratio: float = 0.5,
                              sampling_method: str = 'stratified',
                              land_mask_path: Path = Path("./outputs/phase2/aligned/chirps_aligned.tif")
                              ) -> Tuple[np.ndarray, np.ndarray]:
-        """Create balanced sample points on the aligned 12.5 m grid (flood-able land only)"""
+        """Create balanced sample points on the aligned 12.5 m grid (flood-able land only).
+        Each point is tagged with the flood event it was sampled from (self.sample_events)."""
         from rasterio.warp import reproject, Resampling
         from rasterio.coords import BoundingBox
 
         if flood_inventory is None:
             flood_inventory = self.flood_inventory
-        
+
         if flood_inventory is None:
             raise ValueError("No flood inventory! Call generate_flood_inventory() first.")
-        
+
         # Land mask + target grid: aligned rasters (CHIRPS is land-only, nodata = sea)
         land_mask_path = Path(land_mask_path)
         if not land_mask_path.exists():
@@ -224,12 +225,12 @@ class SARProcessor:
         src_transform = self.metadata['transform']
         src_crs = self.metadata['crs']
         logger.info(f"Land mask: {land.sum():,} land pixels of {land.size:,} ({land.mean()*100:.1f}%)")
-        
+
         # Terrain mask: keep only flood-able terrain (removes radar shadow/layover false positives)
         def _load_aligned(name):
             with rasterio.open(land_mask_path.parent / f"{name}_aligned.tif") as s:
                 return s.read(1, masked=True).astype(np.float32).filled(np.nan)
-        
+
         hand_r = _load_aligned("hand")
         slope_r = _load_aligned("slope")
         dist_r = _load_aligned("distance_to_river")
@@ -237,16 +238,16 @@ class SARProcessor:
         del hand_r, slope_r
         logger.info(f"Terrain mask (0 <= HAND <= 15 m, slope <= 5 deg): "
                     f"{terrain_ok.sum():,} pixels ({terrain_ok.mean()*100:.1f}%)")
-        
+
         n_flood = int(n_samples * flood_ratio)
         n_non_flood = n_samples - n_flood
-        
-        all_flood_points = []
-        all_non_flood_points = []
-        
+
+        all_flood_points, all_flood_events = [], []
+        all_non_flood_points, all_non_flood_events = [], []
+
         for event, info in flood_inventory.items():
             raw_flood_map = info['flood_map']
-            
+
             # Resample the SAR flood map onto the aligned grid so (row, col) match the feature rasters
             cover = np.ones(land.shape, dtype=bool)
             if raw_flood_map.shape != land.shape:
@@ -261,23 +262,23 @@ class SARProcessor:
                           dst_transform=dst_transform, dst_crs=dst_crs,
                           resampling=Resampling.nearest)
                 raw_flood_map, cover = resampled, covered.astype(bool)
-            
+
             # Sea / uncovered / non-flood-able pixels become -1: neither flood (>0) nor non-flood (==0)
             flood_map = np.where(land & cover & terrain_ok, raw_flood_map.astype(np.int16), -1)
-            
+
             flood_rows, flood_cols = np.where(flood_map > 0)
             flood_coords = np.column_stack([flood_rows, flood_cols])
             flood_labels = np.ones(len(flood_coords))
-            
+
             non_flood_rows, non_flood_cols = np.where(flood_map == 0)
             non_flood_coords = np.column_stack([non_flood_rows, non_flood_cols])
             non_flood_labels = np.zeros(len(non_flood_coords))
-            
+
             removed_sea = int(np.sum((raw_flood_map > 0) & ~land))
             removed_terrain = int(np.sum((raw_flood_map > 0) & land & ~terrain_ok))
             logger.info(f"{event}: {len(flood_coords)} flood, {len(non_flood_coords)} non-flood pixels "
                         f"({removed_sea:,} sea and {removed_terrain:,} steep/high 'flood' pixels removed)")
-            
+
             if len(flood_coords) > 0:
                 if sampling_method == 'stratified':
                     flood_idx = self._get_stratified_samples(flood_coords, flood_labels, n_flood)
@@ -291,7 +292,7 @@ class SARProcessor:
                         n_boundary = min(n_flood // 2, len(boundary_coords))
                         boundary_idx = np.random.choice(len(boundary_coords), n_boundary, replace=False)
                         boundary_samples = boundary_coords[boundary_idx]
-                        
+
                         remaining = n_flood - n_boundary
                         flood_coords_filtered = flood_coords[~np.isin(flood_coords, boundary_samples).all(axis=1)]
                         if len(flood_coords_filtered) > remaining:
@@ -306,10 +307,11 @@ class SARProcessor:
                 else:  # random
                     flood_idx = np.random.choice(len(flood_coords), min(n_flood, len(flood_coords)), replace=False)
                     flood_samples = flood_coords[flood_idx]
-                
+
                 all_flood_points.append(flood_samples)
+                all_flood_events.append(np.full(len(flood_samples), event, dtype=object))
                 logger.info(f"  Sampled {len(flood_samples)} flood points using {sampling_method}")
-            
+
             if len(non_flood_coords) > 0:
                 if sampling_method == 'stratified':
                     non_flood_idx = self._get_stratified_samples(non_flood_coords, non_flood_labels, n_non_flood)
@@ -323,7 +325,7 @@ class SARProcessor:
                         n_boundary = min(n_non_flood // 2, len(boundary_coords))
                         boundary_idx = np.random.choice(len(boundary_coords), n_boundary, replace=False)
                         boundary_samples = boundary_coords[boundary_idx]
-                        
+
                         remaining = n_non_flood - n_boundary
                         non_flood_filtered = non_flood_coords[~np.isin(non_flood_coords, boundary_samples).all(axis=1)]
                         if len(non_flood_filtered) > remaining:
@@ -338,122 +340,112 @@ class SARProcessor:
                 else:  # random
                     non_flood_idx = np.random.choice(len(non_flood_coords), min(n_non_flood, len(non_flood_coords)), replace=False)
                     non_flood_samples = non_flood_coords[non_flood_idx]
-                
+
                 all_non_flood_points.append(non_flood_samples)
+                all_non_flood_events.append(np.full(len(non_flood_samples), event, dtype=object))
                 logger.info(f"  Sampled {len(non_flood_samples)} non-flood points using {sampling_method}")
-        
+
         # Sample points are now in aligned-grid (row, col); georeference them accordingly
         self.metadata['transform'] = dst_transform
         self.metadata['crs'] = dst_crs.to_string()
         self.metadata['bounds'] = BoundingBox(
             *rasterio.transform.array_bounds(land.shape[0], land.shape[1], dst_transform)
         )
-        
+
         if all_flood_points:
             flood_points = np.vstack(all_flood_points)
+            flood_events = np.concatenate(all_flood_events)
         else:
             flood_points = np.array([]).reshape(0, 2)
-        
+            flood_events = np.array([], dtype=object)
+
         if all_non_flood_points:
             non_flood_points = np.vstack(all_non_flood_points)
+            non_flood_events = np.concatenate(all_non_flood_events)
         else:
             non_flood_points = np.array([]).reshape(0, 2)
-        
+            non_flood_events = np.array([], dtype=object)
+
         if len(flood_points) < n_flood:
             logger.warning(f"Only {len(flood_points)} flood points available, adjusting")
             n_flood_actual = len(flood_points)
             n_non_flood_actual = n_non_flood + (n_flood - n_flood_actual)
         else:
             n_flood_actual = n_flood
-        
+
         if len(non_flood_points) < n_non_flood:
             logger.warning(f"Only {len(non_flood_points)} non-flood points available, adjusting")
             n_non_flood_actual = len(non_flood_points)
         else:
             n_non_flood_actual = n_non_flood
-        
+
         if len(flood_points) > n_flood_actual:
             indices = np.random.choice(len(flood_points), n_flood_actual, replace=False)
             final_flood = flood_points[indices]
+            final_flood_events = flood_events[indices]
         else:
-            final_flood = flood_points
-        
+            final_flood, final_flood_events = flood_points, flood_events
+
         if len(non_flood_points) > n_non_flood_actual:
             indices = np.random.choice(len(non_flood_points), n_non_flood_actual, replace=False)
             final_non_flood = non_flood_points[indices]
+            final_non_flood_events = non_flood_events[indices]
         else:
-            final_non_flood = non_flood_points
-        
+            final_non_flood, final_non_flood_events = non_flood_points, non_flood_events
+
         sample_points = np.vstack([final_flood, final_non_flood])
         sample_labels = np.concatenate([
             np.ones(len(final_flood)),
             np.zeros(len(final_non_flood))
         ])
-        
+        sample_events = np.concatenate([final_flood_events, final_non_flood_events])
+
         shuffle_idx = np.random.permutation(len(sample_points))
         sample_points = sample_points[shuffle_idx]
         sample_labels = sample_labels[shuffle_idx]
-        
+        sample_events = sample_events[shuffle_idx]
+
         self.sample_points = sample_points
         self.sample_labels = sample_labels
-        
+        self.sample_events = sample_events
+
         logger.info(f"Created {len(sample_points)} sample points ({int(np.sum(sample_labels))} flood, {len(sample_labels) - int(np.sum(sample_labels))} non-flood)")
         logger.info(f"  Flood ratio: {np.mean(sample_labels)*100:.2f}%")
         logger.info(f"  Sampling method: {sampling_method}")
-        
+        for ev, cnt in pd.Series(sample_events).value_counts().items():
+            n_f = int(np.sum((sample_events == ev) & (sample_labels == 1)))
+            logger.info(f"  Event {ev}: {cnt} points ({n_f} flood, {cnt - n_f} non-flood)")
+
         return sample_points, sample_labels
-    
-    def train_test_split(self, sample_points: np.ndarray = None, 
-                         sample_labels: np.ndarray = None,
-                         test_size: float = 0.2,
-                         random_state: int = 42) -> Tuple:
-        """Split samples into train and test sets"""
-        if sample_points is None:
-            sample_points = self.sample_points
-        
-        if sample_labels is None:
-            sample_labels = self.sample_labels
-        
-        if sample_points is None or sample_labels is None:
-            raise ValueError("No sample points! Call create_sample_points() first.")
-        
-        X_train, X_test, y_train, y_test = train_test_split(
-            sample_points,
-            sample_labels,
-            test_size=test_size,
-            random_state=random_state,
-            stratify=sample_labels
-        )
-        
-        logger.info(f"Train set: {len(X_train)} samples ({int(np.sum(y_train))} flood, {len(y_train) - int(np.sum(y_train))} non-flood)")
-        logger.info(f"Test set: {len(X_test)} samples ({int(np.sum(y_test))} flood, {len(y_test) - int(np.sum(y_test))} non-flood)")
-        
-        return X_train, X_test, y_train, y_test
-    
+
     def save_sample_points(self, sample_points: np.ndarray = None,
                            sample_labels: np.ndarray = None,
                            output_dir: Path = Path("./outputs/phase2"),
-                           metadata: Dict = None) -> gpd.GeoDataFrame:
-        """Save sample points as shapefile and CSV"""
+                           metadata: Dict = None,
+                           sample_events: np.ndarray = None) -> gpd.GeoDataFrame:
+        """Save sample points (with event, x, y) as shapefile and CSV"""
         if sample_points is None:
             sample_points = self.sample_points
-        
+
         if sample_labels is None:
             sample_labels = self.sample_labels
-        
+
+        if sample_events is None:
+            sample_events = getattr(self, 'sample_events', None)
+
         if sample_points is None or sample_labels is None:
             raise ValueError("No sample points to save!")
-        
+
         output_dir = Path(output_dir)
         sample_dir = output_dir / "sample_points"
         sample_dir.mkdir(parents=True, exist_ok=True)
-        
+
         transform = None
         crs = None
         if metadata:
             transform = metadata.get('transform')
             crs = metadata.get('crs')
-        
+
         geometries = []
         for i, (row, col) in enumerate(sample_points):
             if transform:
@@ -465,22 +457,28 @@ class SARProcessor:
             else:
                 geom = Point(row, col)
             geometries.append(geom)
-        
-        gdf = gpd.GeoDataFrame({
+
+        data = {
             'sample_id': range(len(sample_points)),
             'row': sample_points[:, 0],
             'col': sample_points[:, 1],
+            'x': [g.x for g in geometries],
+            'y': [g.y for g in geometries],
             'flood_label': sample_labels.astype(int),
-            'geometry': geometries
-        }, crs=crs)
-        
+        }
+        if sample_events is not None:
+            data['event'] = np.asarray(sample_events).astype(str)
+        data['geometry'] = geometries
+
+        gdf = gpd.GeoDataFrame(data, crs=crs)
+
         shp_path = sample_dir / "sample_points.shp"
         gdf.to_file(shp_path)
         logger.info(f"Saved sample points to {sample_dir}")
-        
+
         csv_path = sample_dir / "sample_points.csv"
         gdf.drop(columns='geometry').to_csv(csv_path, index=False)
-        
+
         metadata_clean = {}
         if metadata:
             for key, value in metadata.items():
@@ -500,7 +498,7 @@ class SARProcessor:
                             metadata_clean['bounds'] = str(value)
                 else:
                     metadata_clean[key] = value
-        
+
         with open(sample_dir / "metadata.json", 'w') as f:
             json.dump({
                 'n_samples': len(sample_points),
@@ -510,9 +508,11 @@ class SARProcessor:
                 'crs': crs,
                 'metadata': metadata_clean
             }, f, indent=2)
-        
+
         return gdf
-    
+
+
+        
     def get_sar_metadata(self) -> Dict:
         """Get SAR metadata"""
         if not self.metadata:

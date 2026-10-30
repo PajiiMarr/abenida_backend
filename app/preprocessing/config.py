@@ -90,26 +90,17 @@ SAR_REGISTERED = {
 }
 
 FLOOD_EVENTS = {
-    "may_2021": {
-        "name": "May 19, 2021",
-        "date": datetime(2021, 5, 19),
-        "sar_key": "may_2021",
-        "pre_date": datetime(2021, 5, 17),
-        "post_date": datetime(2021, 5, 29),
-        "days_before": 7,
-        "days_after": 7,
-    },
     "oct_2022": {
-        "name": "October 27-29, 2022 (Typhoon Nalgae/Paeng)",
-        "date": datetime(2022, 10, 28),  # peak flooding
+        "name": "October 27, 2022 (Typhoon Paeng)",
+        "date": datetime(2022, 10, 27),
         "sar_key": "oct_2022",
         "pre_date": datetime(2022, 10, 20),
         "post_date": datetime(2022, 11, 1),
-        "days_before": 8,
-        "days_after": 4,
+        "days_before": 7,
+        "days_after": 5,
     },
     "jan_2023": {
-        "name": "January 11, 2023 (Shear Line)",
+        "name": "January 11, 2023 (LPA & Shearline)",
         "date": datetime(2023, 1, 11),
         "sar_key": "jan_2023",
         "pre_date": datetime(2022, 12, 31),
@@ -117,41 +108,14 @@ FLOOD_EVENTS = {
         "days_before": 11,
         "days_after": 1,
     },
-    "jan31_2023": {
-        "name": "January 31, 2023 (Localized Thunderstorms)",
-        "date": datetime(2023, 1, 31),
-        "sar_key": "jan31_2023",
-        "pre_date": datetime(2023, 1, 24),
-        "post_date": datetime(2023, 2, 5),
-        "days_before": 7,
-        "days_after": 5,
-    },
-    "aug_2023": {
-        "name": "August 12, 2023 (Southwest Monsoon)",
-        "date": datetime(2023, 8, 12),
-        "sar_key": "aug_2023",
-        "pre_date": datetime(2023, 8, 4),
-        "post_date": datetime(2023, 8, 16),
-        "days_before": 8,
-        "days_after": 4,
-    },
-    "jun_2024": {
-        "name": "June 26, 2024 (LPA & ITCZ)",
-        "date": datetime(2024, 6, 26),
-        "sar_key": "jun_2024",
-        "pre_date": datetime(2024, 6, 23),
-        "post_date": datetime(2024, 7, 5),
-        "days_before": 3,
-        "days_after": 9,
-    },
     "jul_2024": {
-        "name": "July 12-16, 2024 (LPA & ITCZ)",
-        "date": datetime(2024, 7, 14), # midpoint of event
+        "name": "July 12, 2024 (Habagat)",
+        "date": datetime(2024, 7, 12),
         "sar_key": "jul_2024",
         "pre_date": datetime(2024, 7, 5),
         "post_date": datetime(2024, 7, 17),
-        "days_before": 9,
-        "days_after": 1,
+        "days_before": 7,
+        "days_after": 5,
     },
 }
 

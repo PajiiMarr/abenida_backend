@@ -1,0 +1,102 @@
+barangay,key,n_events,paeng,lpa,habagat,flood_points,total_points
+Mangusu,mangusu,2,False,True,True,876.0,1133.0
+Vitali,vitali,2,False,True,True,660.0,1354.0
+Limaong,limaong,0,False,False,False,640.0,893.0
+Sibulao (Caruan),sibulao,0,False,False,False,636.0,921.0
+Buenavista,buenavista,0,False,False,False,370.0,458.0
+Cabaluay,cabaluay,2,True,True,False,336.0,460.0
+Talabaan,talabaan,0,False,False,False,335.0,387.0
+Mercedes,mercedes,2,True,True,False,332.0,437.0
+Cawit,cawit,3,True,True,True,331.0,427.0
+Manicahan,manicahan,2,True,True,False,297.0,387.0
+Bunguiao,bunguiao,1,False,True,False,294.0,463.0
+Talisayan,talisayan,3,True,True,True,287.0,548.0
+Taluksangay,taluksangay,0,False,False,False,281.0,306.0
+Boalan,boalan,3,True,True,True,273.0,365.0
+Patalon,patalon,3,True,True,True,245.0,377.0
+Victoria,victoria,1,False,True,False,205.0,253.0
+San Roque,san roque,3,True,True,True,195.0,224.0
+Santa Maria,santa maria,3,True,True,True,179.0,207.0
+Calarian,calarian,3,True,True,True,169.0,268.0
+Talon-talon,talon talon,3,True,True,True,169.0,215.0
+Mampang,mampang,2,True,True,False,160.0,200.0
+Calabasa,calabasa,0,False,False,False,157.0,370.0
+Sangali,sangali,3,True,True,True,154.0,227.0
+Labuan,labuan,3,True,True,True,152.0,217.0
+Muti,muti,0,False,False,False,133.0,160.0
+Sinubung,sinubung,2,False,True,True,130.0,181.0
+Pasonanca,pasonanca,3,True,True,True,127.0,303.0
+Zambowood,zambowood,2,True,True,False,124.0,168.0
+Landang Laum,landang laum,0,False,False,False,122.0,180.0
+Maasin,maasin,3,True,True,True,121.0,272.0
+Culianan,culianan,1,False,True,False,111.0,149.0
+Tagasilay,tagasilay,0,False,False,False,92.0,147.0
+Tigbalabag,tigbalabag,0,False,False,False,89.0,134.0
+Barangay Zone III (Pob.),barangay zone iii,1,False,True,False,84.0,90.0
+San Jose Gusu,san jose gusu,3,True,True,True,67.0,86.0
+Divisoria,divisoria,3,True,True,True,58.0,88.0
+Salaan,salaan,1,False,True,False,56.0,141.0
+Pamucutan,pamucutan,3,True,True,True,54.0,232.0
+Mariki,mariki,0,False,False,False,52.0,59.0
+Arena Blanco,arena blanco,0,False,False,False,51.0,67.0
+Lamisahan,lamisahan,0,False,False,False,51.0,249.0
+Cacao,cacao,1,False,True,False,49.0,89.0
+Lapakan,lapakan,0,False,False,False,46.0,110.0
+Sinunoc,sinunoc,3,True,True,True,42.0,197.0
+Lunzuran,lunzuran,2,True,True,False,41.0,78.0
+Tugbungan,tugbungan,3,True,True,True,39.0,54.0
+Unclaimed Area under Jurisdiction of Zamboanga City,unclaimed area under jurisdiction of zamboanga city,0,False,False,False,39.0,117.0
+Baliwasan,baliwasan,3,True,True,True,37.0,47.0
+Licomo,licomo,1,False,True,False,33.0,122.0
+Kasanyangan,kasanyangan,3,True,True,True,32.0,41.0
+Canelar,canelar,3,True,True,True,30.0,39.0
+Tumaga,tumaga,3,True,True,True,23.0,50.0
+Malagutay,malagutay,3,True,True,True,23.0,52.0
+Lumbangan,lumbangan,1,True,False,False,23.0,47.0
+Latuan (Curuan),latuan,0,False,False,False,22.0,44.0
+Lanzones,lanzones,0,False,False,False,19.0,27.0
+Pasobolong,pasobolong,0,False,False,False,18.0,49.0
+Tictapul,tictapul,2,False,True,True,17.0,110.0
+Tulungatung,tulungatung,2,True,True,False,15.0,37.0
+Campo Islam,campo islam,1,True,False,False,15.0,22.0
+Cabatangan,cabatangan,3,True,True,True,13.0,31.0
+Rio Hondo,rio hondo,1,True,False,False,9.0,12.0
+Barangay Zone I (Pob.),barangay zone i,0,False,False,False,8.0,8.0
+Camino Nuevo,camino nuevo,2,True,True,False,8.0,18.0
+Santa Barbara,santa barbara,0,False,False,False,8.0,11.0
+Guisao,guisao,1,False,True,False,7.0,26.0
+San Jose Cawa-cawa,san jose cawa cawa,0,False,False,False,7.0,12.0
+Guiwan,guiwan,3,True,True,True,7.0,16.0
+La Paz,la paz,2,True,True,False,6.0,12.0
+Santa Catalina,santa catalina,1,False,True,False,6.0,14.0
+Limpapa,limpapa,2,True,True,False,6.0,80.0
+Putik,putik,3,True,True,True,6.0,27.0
+Tetuan,tetuan,3,True,True,True,5.0,25.0
+Tolosa,tolosa,0,False,False,False,4.0,17.0
+Pasonanca Natural Park under Jurisdiction of Zamboanga City,pasonanca natural park under jurisdiction of zamboanga city,0,False,False,False,4.0,42.0
+Santo Niño,santo nino,0,False,False,False,3.0,5.0
+Recodo,recodo,3,True,True,True,3.0,12.0
+Lumayang,lumayang,0,False,False,False,3.0,3.0
+Barangay Zone IV (Pob.),barangay zone iv,0,False,False,False,3.0,6.0
+Tumitus,tumitus,0,False,False,False,2.0,12.0
+Baluno,baluno,0,False,False,False,2.0,5.0
+Tumalutab,tumalutab,0,False,False,False,0.0,
+Capisan,capisan,0,False,False,False,0.0,
+Panubigan,panubigan,0,False,False,False,0.0,
+Tigtabon,tigtabon,1,True,False,False,0.0,
+Landang Gua,landang gua,0,False,False,False,0.0,
+Bolong,bolong,1,False,True,False,0.0,
+Busay (Sacol Island),busay,0,False,False,False,0.0,
+Curuan,curuan,2,True,True,False,0.0,233.0
+Dita,dita,0,False,False,False,0.0,3.0
+Dulian (Upper Bunguiao),dulian,0,False,False,False,0.0,98.0
+Dulian (Upper Pasonanca),dulian,0,False,False,False,0.0,98.0
+Lubigan,lubigan,0,False,False,False,0.0,7.0
+Taguiti,taguiti,0,False,False,False,0.0,
+Manalipa,manalipa,0,False,False,False,0.0,
+Pangapuyan,pangapuyan,0,False,False,False,0.0,
+Ayala,ayala,3,True,True,True,0.0,
+Pasilmanta (Sacol Island),pasilmanta,0,False,False,False,0.0,
+Barangay Zone II (Pob.),barangay zone ii,0,False,False,False,0.0,2.0
+Quiniput,quiniput,0,False,False,False,0.0,160.0
+Watershed Area under Jurisdiction of Zamboanga City,watershed area under jurisdiction of zamboanga city,0,False,False,False,0.0,

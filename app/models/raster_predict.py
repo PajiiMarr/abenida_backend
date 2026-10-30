@@ -83,7 +83,10 @@ def flood_able_mask(arrays: Dict[str, np.ndarray]):
         raise RuntimeError("HAND and slope rasters are required to define the flood-able domain.")
 
     with np.errstate(invalid="ignore"):
-        land = np.isfinite(arrays["chirps"]) if "chirps" in arrays else np.isfinite(hand)
+        # FIX: Use HAND instead of CHIRPS to define land. 
+        # This prevents CHIRPS data gaps from creating blocky holes.
+        land = np.isfinite(hand)
+        
         in_terrain = (
             np.isfinite(hand) & (hand >= HAND_MIN) & (hand <= HAND_MAX)
             & np.isfinite(slope) & (slope <= SLOPE_MAX)
@@ -95,7 +98,6 @@ def flood_able_mask(arrays: Dict[str, np.ndarray]):
 
     domain = land & in_terrain & ~channel
     return land, channel, domain
-
 
 def _training_fill(name: str) -> Optional[float]:
     """Fill value used during training (feature_engineering.get_training_stats), if available."""
@@ -109,23 +111,29 @@ def _training_fill(name: str) -> Optional[float]:
 
 def _fill_median(arrays: Dict[str, np.ndarray], domain: np.ndarray) -> None:
     """
-    Mirror training: NaN in selected raw features -> training fill value.
-    Falls back to the median over the flood-able domain if the stats are unavailable.
+    Fill NaN in ALL raw features within the domain.
     """
-    for name in FILL_MEDIAN_FEATURES:
-        a = arrays.get(name)
-        if a is None or not domain.any():
-            continue
-        fill = _training_fill(name)
-        if fill is None:
-            fill = float(np.nanmedian(a[domain]))
-            src = "domain median"
-        else:
-            src = "training stats"
-        missing = domain & ~np.isfinite(a)
-        a[missing] = fill
-        logger.info(f"Filled {int(missing.sum()):,} NaN '{name}' pixels with {fill:.2f} ({src})")
+    if not domain.any():
+        return
 
+    for name, a in arrays.items():
+        if a is None:
+            continue
+        
+        missing = domain & ~np.isfinite(a)
+        if not missing.any():
+            continue
+
+        fill = _training_fill(name)
+        if fill is None or not np.isfinite(fill):
+            fill = float(np.nanmedian(a[domain]))
+            if not np.isfinite(fill):
+                fill = float(np.nanmedian(a))
+            if not np.isfinite(fill):
+                fill = 0.0 # ultimate fallback
+
+        a[missing] = fill
+        logger.info(f"Filled {int(missing.sum()):,} NaN '{name}' pixels with {fill:.4f}")
 
 def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_ROWS) -> Tuple[np.ndarray, dict]:
     """
@@ -147,7 +155,7 @@ def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_RO
     out = np.full((h, w), np.nan, dtype=np.float32)
     out[land & ~domain & ~channel] = OUTSIDE_VALUE
 
-    n_pred = n_skipped = 0
+    n_pred = 0
     for r0 in range(0, h, chunk_rows):
         r1 = min(r0 + chunk_rows, h)
         dom = domain[r0:r1]
@@ -161,26 +169,32 @@ def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_RO
 
         sel = dom.reshape(-1)
         X = flat[sel]
-        ok = np.all(np.isfinite(X), axis=1)
-        n_skipped += int((~ok).sum())
-
+        
+        # FIX: Force no NaNs. Replace any stray NaNs with 0.0
+        X = np.nan_to_num(X, nan=0.0)
+        
         proba = np.full(len(X), np.nan, dtype=np.float32)
-        if ok.any():
-            Xv = X[ok]
+        if len(X) > 0:
+            Xv = X
             if scaler is not None:
                 Xv = scaler.transform(Xv).astype(np.float32)
+            
+            # Final safety check in case scaling produced any NaN/Inf
+            Xv = np.nan_to_num(Xv, nan=0.0, posinf=0.0, neginf=0.0)
+            
             if hasattr(model, "predict_proba"):
                 p = model.predict_proba(Xv)[:, 1]
             else:
                 p = model.predict(Xv)
-            proba[ok] = np.asarray(p, dtype=np.float32)
-            n_pred += int(ok.sum())
+                
+            proba = np.asarray(p, dtype=np.float32)
+            n_pred += len(Xv)
 
         block = out[r0:r1].copy().reshape(-1)
         block[sel] = proba
         out[r0:r1] = block.reshape(r1 - r0, w)
 
-    logger.info(f"Predicted {n_pred:,} pixels; {n_skipped:,} flood-able pixels skipped (non-finite features)")
+    logger.info(f"Predicted {n_pred:,} pixels; 0 pixels skipped.")
 
     meta.update(
         dtype="float32",
@@ -189,7 +203,6 @@ def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_RO
         compress="lzw",
     )
     return out, meta
-
 
 def quantile_breaks(raster: np.ndarray, qs=(0.50, 0.75, 0.90)) -> Tuple[float, ...]:
     """Class breaks from flood-able pixels only (ignores NaN and OUTSIDE_VALUE)."""

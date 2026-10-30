@@ -1,8 +1,10 @@
 """
 Machine Learning Models for Flood Susceptibility
 Phase 3: GWR, MGWR, MARS, SVM, and Stacking Ensemble
+(+ 16-model suite: 4 models x oct_2022 / jan_2023 / jul_2024 / overall)
 """
 
+import json
 import numpy as np
 import pandas as pd
 import logging
@@ -11,19 +13,21 @@ from typing import Tuple, Optional, Dict, Any, List
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.svm import SVC
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.decomposition import PCA
 from sklearn.ensemble import (
     StackingClassifier,
     RandomForestClassifier,
     RandomForestRegressor,
 )
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
-from sklearn.model_selection import GridSearchCV, cross_val_score
+from sklearn.model_selection import GridSearchCV, cross_val_score, train_test_split
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, cohen_kappa_score,
     precision_score, recall_score, f1_score, r2_score,
     mean_squared_error, mean_absolute_error, confusion_matrix
 )
 from sklearn.preprocessing import StandardScaler
+from scipy.spatial import cKDTree
 import joblib
 from pathlib import Path
 
@@ -1106,3 +1110,286 @@ class ModelEvaluator:
             }
             for k, v in scores.items()
         }
+
+
+# ===========================================================================
+# 16-model suite: 4 models x (oct_2022, jan_2023, jul_2024, overall)
+# ===========================================================================
+
+EVENT_KEYS = ("oct_2022", "jan_2023", "jul_2024")
+
+
+def _stratified_subsample(y, m, seed):
+    """Indices of a stratified subsample (GWR/MGWR are O(n^2) in memory)."""
+    n = len(y)
+    if m is None or n <= m:
+        return np.arange(n)
+    idx, _ = train_test_split(np.arange(n), train_size=m, stratify=y, random_state=seed)
+    return idx
+
+
+# ---------------------------------------------------------------------------
+# GWPCA transformer (local weighted PCA on anchor points, bisquare adaptive)
+# ---------------------------------------------------------------------------
+class GWPCATransformer:
+    """
+    Geographically weighted PCA. Local loadings are computed at `n_anchors`
+    locations using an adaptive bisquare kernel; any point is projected with
+    the loadings of its nearest anchor. Signs are aligned to global PCA.
+    Number of components follows GWPCA_PARAMS['variance_threshold'] (global).
+    """
+
+    def __init__(self, variance_threshold=0.85, n_anchors=300,
+                 k_frac=0.1, min_k=100, random_state=42):
+        self.variance_threshold = variance_threshold
+        self.n_anchors = n_anchors
+        self.k_frac = k_frac
+        self.min_k = min_k
+        self.random_state = random_state
+
+    def fit(self, coords, X):
+        coords = np.asarray(coords, float)
+        self.scaler_ = StandardScaler()
+        Z = self.scaler_.fit_transform(np.asarray(X, float))
+        n, p = Z.shape
+
+        gp = PCA().fit(Z)
+        cum = np.cumsum(gp.explained_variance_ratio_)
+        self.n_components_ = int(min(np.searchsorted(cum, self.variance_threshold) + 1, p))
+        ref = gp.components_[:self.n_components_]
+
+        k = int(np.clip(self.k_frac * n, min(self.min_k, n - 1), n - 1))
+        rng = np.random.RandomState(self.random_state)
+        a_idx = rng.choice(n, size=min(self.n_anchors, n), replace=False)
+        tree = cKDTree(coords)
+        d, nb = tree.query(coords[a_idx], k=k)
+
+        loadings, ratios = [], []
+        for a in range(len(a_idx)):
+            h = max(d[a, -1] * 1.0000001, 1e-9)
+            w = (1 - (d[a] / h) ** 2) ** 2
+            Zn = Z[nb[a]]
+            mu = (w[:, None] * Zn).sum(0) / w.sum()
+            Zc = Zn - mu
+            C = (Zc * w[:, None]).T @ Zc / w.sum()
+            vals, vecs = np.linalg.eigh(C)
+            order = np.argsort(vals)[::-1][:self.n_components_]
+            V = vecs[:, order].T
+            s = np.sign((V * ref).sum(1))
+            s[s == 0] = 1
+            loadings.append(V * s[:, None])
+            ratios.append(vals[order].sum() / max(vals.sum(), 1e-12))
+
+        self.loadings_ = np.asarray(loadings)            # (A, m, p)
+        self.anchor_tree_ = cKDTree(coords[a_idx])
+        self.local_variance_explained_ = float(np.mean(ratios))
+        return self
+
+    def transform(self, coords, X):
+        Z = self.scaler_.transform(np.asarray(X, float))
+        _, a = self.anchor_tree_.query(np.asarray(coords, float))
+        return np.einsum("nmp,np->nm", self.loadings_[a], Z)
+
+    def fit_transform(self, coords, X):
+        return self.fit(coords, X).transform(coords, X)
+
+
+# ---------------------------------------------------------------------------
+# Common interface: fit(coords, X, y) / predict_proba(coords, X) -> 1-D proba
+# ---------------------------------------------------------------------------
+class GWPCASVMModel:
+    """Model 1: GWPCA scores -> calibrated SVM."""
+    name = "m1_gwpca_svm"
+
+    def __init__(self, random_state=42, variance_threshold=0.85, **_):
+        self.gwpca = GWPCATransformer(variance_threshold, random_state=random_state)
+        self.svm = SVMModel()
+
+    def fit(self, coords, X, y):
+        S = self.gwpca.fit_transform(coords, X)
+        self.svm.fit(S, y, tune_hyperparams=True)
+        return self
+
+    def predict_proba(self, coords, X):
+        return self.svm.predict_proba(self.gwpca.transform(coords, X))[:, 1]
+
+    def get_summary(self):
+        return {"n_components": self.gwpca.n_components_,
+                "local_variance_explained": self.gwpca.local_variance_explained_,
+                "svm": self.svm.get_summary()}
+
+
+class GWRMGWRModel:
+    """Model 2: spatial regression hybrid, mean of GWR and MGWR probabilities."""
+    name = "m2_gwr_mgwr"
+
+    def __init__(self, random_state=42, max_spatial_samples=2000, **_):
+        self.random_state = random_state
+        self.max_spatial_samples = max_spatial_samples
+        self.gwr, self.mgwr = GWRModel(), MGWRModel()
+
+    def fit(self, coords, X, y):
+        idx = _stratified_subsample(y, self.max_spatial_samples, self.random_state)
+        self.gwr.fit(coords[idx], X[idx], y[idx])
+        self.mgwr.fit(coords[idx], X[idx], y[idx])
+        return self
+
+    def predict_proba(self, coords, X):
+        p = (np.clip(self.gwr.predict_at(coords, X), 0, 1)
+             + np.clip(self.mgwr.predict_at(coords, X), 0, 1)) / 2
+        return p
+
+    def get_summary(self):
+        return {"gwr": self.gwr.get_summary(), "mgwr": self.mgwr.get_summary()}
+
+
+class GWPCAMARSModel:
+    """Model 3: GWPCA scores -> MARS."""
+    name = "m3_gwpca_mars"
+
+    def __init__(self, random_state=42, variance_threshold=0.85, **_):
+        self.gwpca = GWPCATransformer(variance_threshold, random_state=random_state)
+        self.mars = MARSModeL(random_state=random_state)
+
+    def fit(self, coords, X, y):
+        self.mars.fit(self.gwpca.fit_transform(coords, X), y)
+        return self
+
+    def predict_proba(self, coords, X):
+        return self.mars.predict_proba(self.gwpca.transform(coords, X))[:, 1]
+
+    def get_summary(self):
+        return {"n_components": self.gwpca.n_components_, "mars": self.mars.get_summary()}
+
+
+class SpatialStackingModel:
+    """
+    Model 4: stacking ensemble (blending) over SVM, MARS, GWR, MGWR and a
+    GWPCA-score logistic model. Base learners are fit on (1 - meta_frac) of the
+    training data; the logistic meta-learner is fit on the held-out part, so
+    meta inputs are never in-sample.
+    """
+    name = "m4_stacking_all"
+
+    def __init__(self, random_state=42, meta_frac=0.25,
+                 max_spatial_samples=2000, variance_threshold=0.85, **_):
+        self.random_state = random_state
+        self.meta_frac = meta_frac
+        self.max_spatial_samples = max_spatial_samples
+        self.svm = SVMModel(C=10, gamma=0.1)
+        self.mars = MARSModeL(random_state=random_state)
+        self.gwr, self.mgwr = GWRModel(), MGWRModel()
+        self.gwpca = GWPCATransformer(variance_threshold, random_state=random_state)
+        self.gwpca_lr = LogisticRegression(max_iter=1000, class_weight="balanced")
+        self.meta = LogisticRegression(max_iter=1000, class_weight="balanced")
+        self.base_names = ["svm", "mars", "gwr", "mgwr", "gwpca_lr"]
+
+    def _base_matrix(self, coords, X):
+        return np.column_stack([
+            self.svm.predict_proba(X)[:, 1],
+            self.mars.predict_proba(X)[:, 1],
+            np.clip(self.gwr.predict_at(coords, X), 0, 1),
+            np.clip(self.mgwr.predict_at(coords, X), 0, 1),
+            self.gwpca_lr.predict_proba(self.gwpca.transform(coords, X))[:, 1],
+        ])
+
+    def fit(self, coords, X, y):
+        ib, im = train_test_split(np.arange(len(y)), test_size=self.meta_frac,
+                                  stratify=y, random_state=self.random_state)
+        cb, Xb, yb = coords[ib], X[ib], y[ib]
+
+        self.svm.fit(Xb, yb, tune_hyperparams=False)
+        self.mars.fit(Xb, yb)
+        sub = _stratified_subsample(yb, self.max_spatial_samples, self.random_state)
+        self.gwr.fit(cb[sub], Xb[sub], yb[sub])
+        self.mgwr.fit(cb[sub], Xb[sub], yb[sub])
+        self.gwpca_lr.fit(self.gwpca.fit_transform(cb, Xb), yb)
+
+        self.meta.fit(self._base_matrix(coords[im], X[im]), y[im])
+        return self
+
+    def predict_proba(self, coords, X):
+        return self.meta.predict_proba(self._base_matrix(coords, X))[:, 1]
+
+    def get_summary(self):
+        return {"meta_weights": dict(zip(self.base_names, self.meta.coef_[0].round(4).tolist())),
+                "gwpca_components": self.gwpca.n_components_}
+
+
+MODEL_CLASSES = [GWPCASVMModel, GWRMGWRModel, GWPCAMARSModel, SpatialStackingModel]
+# Approach coverage per category: SVM (m1, m4), GWPCA (m1, m3, m4),
+# GWR (m2, m4), MGWR (m2, m4), MARS (m3, m4), Stacking (m4).
+
+
+# ---------------------------------------------------------------------------
+# Runner: 4 categories x 4 models = 16 independently trained/evaluated models
+# ---------------------------------------------------------------------------
+def train_model_suite(df: pd.DataFrame,
+                      feature_cols: List[str],
+                      coord_cols=("x", "y"),
+                      label_col: str = "flood_label",
+                      event_col: str = "event",
+                      out_dir="outputs/phase3_suite",
+                      test_size: float = 0.2,
+                      seed: int = 42,
+                      max_spatial_samples: int = 2000) -> pd.DataFrame:
+    """
+    df must contain feature_cols, coord_cols (metric CRS, e.g. EPSG:32651),
+    label_col (0/1) and event_col with values 'oct_2022' | 'jan_2023' | 'jul_2024'.
+    Each category gets its own stratified train/test split and fresh models.
+    """
+    if event_col not in df.columns:
+        raise ValueError(f"'{event_col}' column missing; per-event training needs it "
+                         f"(values: {EVENT_KEYS}).")
+
+    out_dir = Path(out_dir)
+    categories = {k: df[df[event_col] == k] for k in EVENT_KEYS}
+    categories["overall"] = df
+
+    rows = []
+    for cat, d in categories.items():
+        d = d.dropna(subset=[*feature_cols, *coord_cols, label_col])
+        if d[label_col].nunique() < 2:
+            logger.error(f"[{cat}] needs both classes; skipping")
+            continue
+
+        X = d[feature_cols].to_numpy(float)
+        coords = d[list(coord_cols)].to_numpy(float)
+        y = d[label_col].to_numpy(int)
+
+        Xtr, Xte, ctr, cte, ytr, yte = train_test_split(
+            X, coords, y, test_size=test_size, stratify=y, random_state=seed)
+        logger.info(f"[{cat}] train={len(ytr)} test={len(yte)} "
+                    f"flood_rate={y.mean():.2%}")
+
+        cat_dir = out_dir / cat
+        cat_dir.mkdir(parents=True, exist_ok=True)
+
+        for cls in MODEL_CLASSES:
+            try:
+                model = cls(random_state=seed, max_spatial_samples=max_spatial_samples)
+                model.fit(ctr, Xtr, ytr)
+                proba = np.clip(model.predict_proba(cte, Xte), 0, 1)
+                pred = (proba >= 0.5).astype(int)
+                m = ModelEvaluator.evaluate(yte, pred, proba)
+                joblib.dump(model, cat_dir / f"{cls.name}.pkl")
+                with open(cat_dir / f"{cls.name}_summary.json", "w") as f:
+                    json.dump(model.get_summary(), f, indent=2, default=str)
+                rows.append({"category": cat, "model": cls.name,
+                             "n_train": len(ytr), "n_test": len(yte), **m})
+                logger.info(f"[{cat}] {cls.name}: AUC={m.get('roc_auc', float('nan')):.4f} "
+                            f"F1={m['f1']:.4f} kappa={m['kappa']:.4f}")
+            except Exception as e:
+                logger.exception(f"[{cat}] {cls.name} failed: {e}")
+                rows.append({"category": cat, "model": cls.name, "error": str(e)})
+
+    results = pd.DataFrame(rows)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results.to_csv(out_dir / "suite_model_comparison.csv", index=False)
+    return results
+
+
+# Example:
+# df = pd.read_csv("outputs/phase2/full_dataset_engineered.csv")
+# train_model_suite(df, feature_cols=json.load(open("outputs/phase2/feature_names.json")),
+#                   coord_cols=("x", "y"), label_col="flood_label", event_col="event")

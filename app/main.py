@@ -817,8 +817,9 @@ async def generate_susceptibility(req: GenerateRasterRequest):
 
     try:
         raster, meta = predict_full_raster(
-            model, _registry_scaler(), _registry_feature_names()
+            model, _get_raster_scaler(), _registry_feature_names()
         )
+
     except Exception as e:
         raise HTTPException(500, f"Raster prediction failed: {e}")
 
@@ -919,6 +920,41 @@ async def health_check():
         "status": "healthy",
         "models_ready": bool(getattr(registry, "is_ready", False)),
     }
+
+@app.get("/api/raster/{model}")
+async def get_raster(model: str):
+    path = PHASE3_DIR / f"susceptibility_{model}.tif"
+    if not path.exists():
+        raise HTTPException(404, "Raster not generated yet")
+    return FileResponse(path, media_type="image/tiff")
+
+class RasterScalerWrapper:
+    def __init__(self, scaler_dict):
+        self.mean = scaler_dict.get("mean", scaler_dict.get("mu", scaler_dict.get("center")))
+        self.scale = scaler_dict.get("scale", scaler_dict.get("sigma", scaler_dict.get("std")))
+        if self.mean is not None and self.scale is not None:
+            self.mean = np.asarray(self.mean, dtype=np.float64)
+            self.scale = np.asarray(self.scale, dtype=np.float64)
+            self.scale = np.where(self.scale == 0, 1.0, self.scale)
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=np.float64)
+        if self.mean is not None and self.scale is not None:
+            return (X - self.mean) / self.scale
+        return X
+
+def _get_raster_scaler():
+    scaler = getattr(registry, "scaler", None)
+    if scaler is None:
+        return None
+    if hasattr(scaler, "transform"):
+        return scaler
+    if isinstance(scaler, dict):
+        nested = scaler.get("scaler")
+        if nested is not None and hasattr(nested, "transform"):
+            return nested
+        return RasterScalerWrapper(scaler)
+    return scaler
 
 
 if __name__ == "__main__":

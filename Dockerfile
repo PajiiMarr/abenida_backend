@@ -9,11 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LD_LIBRARY_PATH=/usr/lib/R/lib:/usr/lib/x86_64-linux-gnu
 
 # ---- System deps ------------------------------------------------------------
+# git: required for pip to install editable VCS dependencies (pyGWRx)
 # build-essential + gfortran: wheels that need compiling (mgwr deps, rpy2)
 # libgdal/libgeos/libproj: rasterio, geopandas, pyproj, spglm
 # r-base + r-base-dev: rpy2 + earth backend for MARS
 # curl/ssl/xml2: R package installs and general HTTP
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
         build-essential \
         gcc g++ gfortran \
         libgdal-dev libgeos-dev libproj-dev proj-data proj-bin gdal-bin \

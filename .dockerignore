@@ -38,8 +38,8 @@ register_sar_to_dem.py
 train_model.py
 pyGWRx/
 
-outputs/phase2/registered_sar/
-outputs/phase2/sample_points/
+# outputs/phase2/registered_sar/
+# outputs/phase2/sample_points/
 outputs/phase2/aligned/*.aux.xml
 outputs/phase2/aligned/*.ovr
 outputs/phase2/*.tmp

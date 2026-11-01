@@ -6,10 +6,9 @@ from datetime import datetime
 
 load_dotenv()
 
-BASE_DIR = Path(os.getenv('BASE_DIR', 
-    '/home/mar/lectures/thesis 1/fsm/datas/FOR TRAINING'))
-PREPROCESS_DIR = Path(os.getenv('PREPROCESS_DIR',
-    '/home/mar/lectures/thesis 1/fsm/preprocess'))
+# Updated default paths to be relative so they work in the Azure container
+BASE_DIR = Path(os.getenv('BASE_DIR', './datas/FOR TRAINING'))
+PREPROCESS_DIR = Path(os.getenv('PREPROCESS_DIR', './outputs/phase2'))
 OUTPUT_DIR = Path(os.getenv('OUTPUT_DIR', './outputs/phase2'))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -123,6 +122,14 @@ AVAILABLE_EVENTS = list(FLOOD_EVENTS.keys())
 
 ACTIVE_EVENT = "oct_2022"
 
+DYNAMIC_EVENT_NAME = os.getenv('DYNAMIC_EVENT_NAME')
+if DYNAMIC_EVENT_NAME:
+    SAR_REGISTERED[DYNAMIC_EVENT_NAME] = {
+        "flood_map": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_flood_map_registered.tif",
+        "ndfi": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_ndfi_registered.tif",
+        "diff_db": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_diff_db_registered.tif",
+    }
+    ACTIVE_EVENT = DYNAMIC_EVENT_NAME
 
 SOCIO = {
     "census": BASE_DIR / "SOCIO DEMOGRAPHIC DATAS/Region-IX_0.xlsx", 

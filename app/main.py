@@ -10,15 +10,22 @@ import json
 import logging
 import os
 import secrets
+from datetime import datetime
+import subprocess # Added for retraining
+import shutil # Added for file handling
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile, File, Form, BackgroundTasks # Added BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+
+# External Integrations
+from supabase import create_client, Client
+from azure.storage.blob import BlobClient
 
 from app.models.loader import registry
 from app.models.feature_engineering import build_feature_matrix
@@ -56,10 +63,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- API key auth (for destructive / expensive endpoints) ----------
-# Set FSI_API_KEY in the environment. If it's missing we generate a random
-# one on startup and log it so the operator can read it from the logs —
-# this avoids a KeyError that would prevent the app from booting.
+# ---------- API key auth ----------
 _FSI_API_KEY_ENV = os.environ.get("FSI_API_KEY")
 if _FSI_API_KEY_ENV:
     API_KEY = _FSI_API_KEY_ENV
@@ -71,20 +75,44 @@ else:
         f"this session: {API_KEY}"
     )
 
-
 def require_key(x_api_key: str = Header(..., description="API key")):
     """Reject requests without a valid X-API-Key header."""
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+# ---------- Database & Storage Setup ----------
+SUPABASE_URL = os.environ.get("VITE_SUPABASE_URL", "https://xflhynxdadwlrloxiogv.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+BLOB_SAS_URL = os.environ.get("BLOB_SAS_URL", "")
 
+if not SUPABASE_KEY or not BLOB_SAS_URL:
+    logger.warning("Missing Supabase or Azure credentials in environment variables. Upload endpoint may fail.")
+
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase client: {e}")
+    supabase = None
+
+def upload_to_azure(file_bytes: bytes, blob_name: str):
+    """Uploads bytes to Azure Blob Storage using the provided SAS URL."""
+    if not BLOB_SAS_URL:
+        raise ValueError("BLOB_SAS_URL is not configured.")
+    
+    base_url, sas_token = BLOB_SAS_URL.split("?", 1)
+    blob_url = f"{base_url}/{blob_name}?{sas_token}"
+    
+    blob_client = BlobClient.from_blob_url(blob_url)
+    blob_client.upload_blob(file_bytes, overwrite=True)
+    
+    return f"{base_url}/{blob_name}"
+
+# ---------- Paths & Data ----------
 BASE_DIR = Path(os.environ.get("BASE_DIR") or ".")
 OUTPUT_DIR = Path(os.environ.get("PREPROCESS_DIR") or BASE_DIR / "outputs/phase2")
 PHASE3_DIR = BASE_DIR / "outputs/phase3"
 BREAKS_PATH = PHASE3_DIR / "risk_breaks.json"
 
-
-# ---------- Phase 2 data (optional; API works without it) ----------
 try:
     X_train = np.load(OUTPUT_DIR / "preprocessed/X_train.npy")
     X_test = np.load(OUTPUT_DIR / "preprocessed/X_test.npy")
@@ -103,7 +131,6 @@ try:
     logger.info(f"Loaded {len(sample_points)} sample points")
 except Exception:
     sample_points = None
-
 
 # ---------- One-shot scaler diagnostic ----------
 _sc = getattr(registry, "scaler", None)
@@ -125,30 +152,23 @@ elif isinstance(_sc, dict):
 else:
     logger.warning(f"registry.scaler is an unexpected type: {type(_sc).__name__}")
 
-
 # ---------- Request schemas ----------
 class PredictPointRequest(BaseModel):
     lat: float
     lng: float
     model: str = "stacking"
     features: Optional[dict] = None
-    explain: bool = True           # include top-5 factor attribution
-
+    explain: bool = True
 
 class PredictBatchRequest(BaseModel):
-    points: List[dict]             # each: {"lat": ..., "lng": ...}
+    points: List[dict]
     model: str = "stacking"
-    explain: bool = False          # opt-in: O(n_features) extra calls per point
-
+    explain: bool = False
 
 class GenerateRasterRequest(BaseModel):
     model: str = "stacking"
 
-
 # ---------- Risk classification ----------
-# Class boundaries are shared between point predictions and the risk-class
-# raster: generate_susceptibility() writes them to outputs/phase3/risk_breaks.json
-# and classify_risk() reads them back. Until that file exists the defaults apply.
 DEFAULT_BREAKS = [0.40, 0.55, 0.70]
 
 RISK_LEVELS = [
@@ -160,9 +180,7 @@ RISK_LEVELS = [
 
 _BREAKS_CACHE: Dict[str, Any] = {"mtime": None, "breaks": list(DEFAULT_BREAKS)}
 
-
 def _load_breaks() -> List[float]:
-    """Current class breaks (3 values); re-read whenever the JSON file changes."""
     try:
         mtime = BREAKS_PATH.stat().st_mtime
     except FileNotFoundError:
@@ -178,13 +196,10 @@ def _load_breaks() -> List[float]:
             _BREAKS_CACHE.update(mtime=mtime, breaks=list(DEFAULT_BREAKS))
     return list(_BREAKS_CACHE["breaks"])
 
-
 def classify_risk(p: float) -> dict:
-    """Map a probability to a risk class using the same breaks as the raster."""
     p = float(np.clip(p, 0.0, 1.0))
     idx = int(np.digitize(p, _load_breaks(), right=False))
     return RISK_LEVELS[idx]
-
 
 def _risk_mapping() -> List[dict]:
     b = _load_breaks()
@@ -195,9 +210,7 @@ def _risk_mapping() -> List[dict]:
         for r, lo, hi in zip(RISK_LEVELS, lowers, uppers)
     ]
 
-
 def _risk_payload(p: float) -> dict:
-    """Uniform risk payload used by every prediction endpoint."""
     r = classify_risk(p)
     return {
         "probability": float(p),
@@ -206,12 +219,8 @@ def _risk_payload(p: float) -> dict:
         "color": r["color"],
     }
 
-
 # ---------- Flood-able terrain gating ----------
-# The models were trained only on flood-able terrain (see create_sample_points
-# in app/preprocessing/sar_processor.py). Outside it they would extrapolate.
 def _domain_check(raw: Dict[str, float]) -> Tuple[Optional[str], Optional[str]]:
-    """Return (kind, note) if the point is outside the modelled domain, else (None, None)."""
     d = raw.get("distance_to_river")
     hand = raw.get("hand")
     slope = raw.get("slope")
@@ -230,7 +239,6 @@ def _domain_check(raw: Dict[str, float]) -> Tuple[Optional[str], Optional[str]]:
         )
     return None, None
 
-
 def _special_payload(kind: str, note: str) -> dict:
     if kind == "channel":
         return {
@@ -243,12 +251,9 @@ def _special_payload(kind: str, note: str) -> dict:
         }
     return {**_risk_payload(OUTSIDE_VALUE), "in_domain": False, "note": note}
 
-
 def _vector_from_raw(raw: Dict[str, float], names: List[str]) -> np.ndarray:
-    """Build a (1, n_features) float32 vector from already-sampled raw values."""
     vec = build_feature_matrix(raw, names)
     return np.asarray(vec, dtype=np.float32).reshape(1, -1)
-
 
 def _registry_models() -> list:
     try:
@@ -258,14 +263,12 @@ def _registry_models() -> list:
         logger.warning(f"registry.list_models() failed: {e}")
         return []
 
-
 def _registry_feature_names() -> list:
     try:
         names = getattr(registry, "feature_names", None)
         return list(names) if names else []
     except Exception:
         return []
-
 
 def _active_feature_set() -> str:
     try:
@@ -278,18 +281,7 @@ def _active_feature_set() -> str:
     except Exception:
         return "unknown"
 
-
-def _registry_scaler():
-    return getattr(registry, "scaler", None)
-
-
 def _apply_scaler(x: np.ndarray) -> np.ndarray:
-    """
-    Apply the registry scaler to a feature array.
-
-    Handles: fitted sklearn scaler, None, or a wrapper dict of the form
-    {'method': ..., 'params': ..., 'scaler': <fitted|dict>}.
-    """
     x = np.asarray(x, dtype=np.float64)
     scaler = getattr(registry, "scaler", None)
 
@@ -331,17 +323,13 @@ def _apply_scaler(x: np.ndarray) -> np.ndarray:
         f"Unrecognized registry.scaler type: {type(scaler).__name__}"
     )
 
-
-# ---------- Spatial models (GWR / MGWR) need coordinates ----------
+# ---------- Spatial models ----------
 SPATIAL_MODELS = {"gwr", "mgwr"}
-# Must match the 'GWR/MGWR reduced feature set' line in the training log.
 SPATIAL_COLS = ["dem", "slope", "aspect", "twi", "hand",
                 "flow_accumulation", "distance_to_river", "chirps", "gpm"]
 _GRID: Dict[str, Any] = {}
 
-
 def _pixel_rowcol(lat: float, lng: float):
-    """lat/lng -> (row, col) on the aligned grid, matching training coords."""
     import pyproj
     import rasterio
     from rasterio.transform import rowcol
@@ -357,11 +345,8 @@ def _pixel_rowcol(lat: float, lng: float):
     r, c = rowcol(_GRID["transform"], x, y)
     return float(r), float(c)
 
-
 class _SpatialAdapter:
-    """Gives GWR/MGWR a predict_proba(X) interface for known locations."""
-
-    def __init__(self, model, names, points):      # points: [(lat, lng), ...]
+    def __init__(self, model, names, points):
         self.model = model
         self.idx = [names.index(f) for f in SPATIAL_COLS]
         self.coords = np.array([_pixel_rowcol(la, ln) for la, ln in points])
@@ -378,19 +363,10 @@ class _SpatialAdapter:
         p = np.clip(self.model.predict_at(coords, X[:, self.idx]), 0.0, 1.0)
         return np.column_stack([1.0 - p, p])
 
-
-# ---------- Feature attribution (model-agnostic) ----------
+# ---------- Feature attribution ----------
 _BASELINE: Optional[np.ndarray] = None
 
-
 def _baseline(names: List[str]) -> np.ndarray:
-    """
-    Mean of the SCALED training features (the 'average' point in model space).
-
-    The scaler is MinMax, so 0.0 is the training minimum, not the mean; ablating
-    a feature to 0.0 would therefore mislead. We use the column means of the
-    standardized training dataset instead.
-    """
     global _BASELINE
     if _BASELINE is None or len(_BASELINE) != len(names):
         try:
@@ -401,14 +377,11 @@ def _baseline(names: List[str]) -> np.ndarray:
             _BASELINE = np.full(len(names), 0.5, dtype=np.float64)
     return _BASELINE
 
-
 def _predict_proba_single(model, x_scaled: np.ndarray) -> float:
-    """Run a single-row prediction, returning P(class=1)."""
     if hasattr(model, "predict_proba"):
         return float(model.predict_proba(x_scaled)[0, 1])
     raw = np.asarray(model.predict(x_scaled)).ravel()
     return float(raw[0])
-
 
 def _feature_attributions(
     model,
@@ -416,22 +389,6 @@ def _feature_attributions(
     names: List[str],
     top_k: int = 5,
 ) -> List[Dict[str, Any]]:
-    """
-    Local feature attribution via mean-ablation.
-
-    For each feature i, we ask: how much does this single point's predicted
-    flood probability change if feature i is reset to its training mean and
-    everything else is held fixed?
-
-        contribution_i = p(x) - p(x with x_i = training_mean_i)
-
-    The training mean is taken in scaled space (see _baseline).
-
-    Positive contribution  -> feature pushed the prediction toward flood.
-    Negative contribution  -> feature pushed the prediction toward non-flood.
-
-    Returns the top_k features sorted by |contribution| descending.
-    """
     x_scaled = np.asarray(x_scaled, dtype=np.float64)
     if x_scaled.ndim == 1:
         x_scaled = x_scaled.reshape(1, -1)
@@ -461,8 +418,56 @@ def _feature_attributions(
     contributions.sort(key=lambda c: abs(c["contribution"]), reverse=True)
     return contributions[:top_k]
 
+def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_ndfi_path: str, event_name: str):
+    logger.info(f"🚀 Starting FULL retraining pipeline for event: {event_name}")
+    
+    # 1. Inject paths into environment so config.py picks them up
+    os.environ['DYNAMIC_EVENT_NAME'] = event_name
 
-# ---------- Core endpoints ----------
+    try:
+        # 2. Register the SAR files to the DEM grid
+        logger.info("Running register_sar_to_dem.py...")
+        register_result = subprocess.run(
+            ["python", "register_sar_to_dem.py", 
+             "--event", event_name, 
+             "--flood", new_flood_map_path,
+             "--diff", new_diff_db_path,
+             "--ndfi", new_ndfi_path],
+            capture_output=True,
+            text=True
+        )
+        if register_result.returncode != 0:
+            logger.error(f"Registration failed:\n{register_result.stderr}")
+            return
+
+        # 3. Run Phase 2 (Preprocessing)
+        logger.info("Running app.preprocessing.pipeline --standardize...")
+        preprocess_result = subprocess.run(
+            ["python", "-m", "app.preprocessing.pipeline", "--standardize"],
+            capture_output=True,
+            text=True
+        )
+        if preprocess_result.returncode != 0:
+            logger.error(f"Preprocessing failed:\n{preprocess_result.stderr}")
+            return
+
+        # 4. Run Phase 3 (Training)
+        logger.info("Running app.training.pipeline...")
+        train_result = subprocess.run(
+            ["python", "-m", "app.training.pipeline"],
+            capture_output=True,
+            text=True
+        )
+        if train_result.returncode != 0:
+            logger.error(f"Training failed:\n{train_result.stderr}")
+            return
+
+        logger.info(f"✅ Retraining pipeline completed successfully for {event_name}!")
+        
+    except Exception as e:
+        logger.error(f"Error during retraining: {str(e)}")
+
+
 @app.get("/")
 async def root():
     return {
@@ -481,9 +486,9 @@ async def root():
             "/api/generate_susceptibility",
             "/api/susceptibility/at",
             "/api/download/{file_type}",
+            "/api/events/upload"
         ],
     }
-
 
 @app.get("/api/status")
 async def get_status():
@@ -498,7 +503,6 @@ async def get_status():
         "active_feature_set": _active_feature_set(),
         "sample_points_loaded": sample_points is not None,
     }
-
 
 @app.get("/api/models")
 async def list_models():
@@ -516,14 +520,12 @@ async def list_models():
         },
     }
 
-
 @app.get("/api/metrics")
 async def get_metrics():
     metrics = getattr(registry, "metrics", None)
     if not metrics:
         raise HTTPException(404, "Phase 3 metrics not found")
     return metrics
-
 
 @app.get("/api/sample_points")
 async def get_sample_points(format: str = Query("geojson")):
@@ -534,7 +536,6 @@ async def get_sample_points(format: str = Query("geojson")):
         return JSONResponse(df.to_dict(orient="records"))
     return JSONResponse(json.loads(sample_points.to_json()))
 
-
 @app.get("/api/features")
 async def get_features():
     try:
@@ -543,7 +544,6 @@ async def get_features():
     except Exception as e:
         raise HTTPException(404, f"Feature stats not found: {e}")
 
-
 @app.get("/api/sar_summary")
 async def get_sar_summary():
     try:
@@ -551,7 +551,6 @@ async def get_sar_summary():
         return JSONResponse(df.to_dict(orient="records"))
     except Exception as e:
         raise HTTPException(404, f"SAR summary not found: {e}")
-
 
 @app.get("/api/gwpca")
 async def get_gwpca_results():
@@ -563,27 +562,100 @@ async def get_gwpca_results():
     except Exception as e:
         raise HTTPException(404, f"GWPCA results not found: {e}")
 
+# ---------- EVENT UPLOAD & RETRAIN ENDPOINT ----------
+@app.post("/api/events/upload")
+async def upload_flood_event(
+    background_tasks: BackgroundTasks, # Added BackgroundTasks
+    eventName: str = Form(...),
+    rainfallDetails: Optional[str] = Form(None),
+    affectedBarangays: Optional[str] = Form(None),
+    affectedFamilies: Optional[str] = Form(None),
+    affectedIndividuals: Optional[str] = Form(None),
+    casualties: Optional[str] = Form(None),
+    infrastructureDamages: Optional[str] = Form(None),
+    totalCostDamaged: Optional[str] = Form(None),
+    houseDamagesDetails: Optional[str] = Form(None),
+    livestockDamages: Optional[str] = Form(None),
+    agriculturalDamages: Optional[str] = Form(None),
+    powerSupplyDamages: Optional[str] = Form(None),
+    floodMap: UploadFile = File(...),
+    diffDb: UploadFile = File(...),
+    ndfi: UploadFile = File(...)
+):
+    if not supabase:
+        raise HTTPException(500, "Supabase client not configured.")
+    
+    try:
+        safe_event_name = "".join([c if c.isalnum() else "_" for c in eventName]).strip("_").lower()
+        
+        flood_map_bytes = await floodMap.read()
+        diff_db_bytes = await diffDb.read()
+        ndfi_bytes = await ndfi.read()
+
+        # 1. Upload to Azure
+        logger.info(f"Uploading files for event: {safe_event_name} to Azure Blob...")
+        flood_url = upload_to_azure(flood_map_bytes, f"events/{safe_event_name}/flood_map.tif")
+        diff_url = upload_to_azure(diff_db_bytes, f"events/{safe_event_name}/diff_db.tif")
+        ndfi_url = upload_to_azure(ndfi_bytes, f"events/{safe_event_name}/ndfi.tif")
+
+        # 2. Insert into Supabase
+        logger.info("Inserting event metadata into Supabase...")
+        db_payload = {
+            "event_name": eventName,
+            "rainfall_details": rainfallDetails,
+            "affected_barangays": int(affectedBarangays) if affectedBarangays else None,
+            "affected_families": int(affectedFamilies) if affectedFamilies else None,
+            "affected_individuals": int(affectedIndividuals) if affectedIndividuals else None,
+            "casualties": int(casualties) if casualties else None,
+            "infrastructure_damages": int(infrastructureDamages) if infrastructureDamages else None,
+            "total_cost_damaged": float(totalCostDamaged) if totalCostDamaged else None,
+            "house_damages_details": houseDamagesDetails,
+            "livestock_damages": float(livestockDamages) if livestockDamages else None,
+            "agricultural_damages": float(agriculturalDamages) if agriculturalDamages else None,
+            "power_supply_damages": float(powerSupplyDamages) if powerSupplyDamages else None,
+            "flood_map_url": flood_url,
+            "diff_db_url": diff_url,
+            "ndfi_url": ndfi_url
+        }
+
+        response = supabase.table("flood_events").insert(db_payload).execute()
+        if not response.data:
+            raise Exception("Failed to insert data into Supabase (empty response).")
+
+        # 3. Save files locally for the training pipeline
+        local_dir = Path(f"./data/incoming/{safe_event_name}")
+        local_dir.mkdir(parents=True, exist_ok=True)
+        
+        local_flood_map = local_dir / "flood_map.tif"
+        local_diff_db = local_dir / "diff_db.tif"
+        local_ndfi = local_dir / "ndfi.tif"
+
+        with open(local_flood_map, "wb") as f: f.write(flood_map_bytes)
+        with open(local_diff_db, "wb") as f: f.write(diff_db_bytes)
+        with open(local_ndfi, "wb") as f: f.write(ndfi_bytes)
+
+        # 4. Trigger the background retraining task
+        background_tasks.add_task(
+            run_retraining_pipeline,
+            str(local_flood_map),
+            str(local_diff_db),
+            str(local_ndfi),
+            safe_event_name
+        )
+
+        return {
+            "status": "success",
+            "message": f"Event '{eventName}' saved successfully. Model retraining has started in the background.",
+            "event_id": response.data[0].get("id")
+        }
+
+    except Exception as e:
+        logger.error(f"Error uploading event: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------- Prediction endpoints ----------
 @app.post("/api/predict/point")
 async def predict_point(req: PredictPointRequest):
-    """
-    Predict flood susceptibility for a single lat/lng.
-
-    If `features` are provided, uses them directly (must be in feature_names
-    order). Otherwise samples the aligned rasters.
-
-    Points outside the modelled domain (river channel, or terrain with
-    HAND > 15 m / slope > 5 deg) are NOT passed to the model: the response has
-    in_domain=false and an explanatory `note`.
-
-    When `explain=true` (default), the response includes `top_factors`: the
-    5 features whose mean-ablation changes the predicted probability the
-    most, with direction ("increases" / "decreases").
-
-    GWR / MGWR are location-dependent: they are wrapped in a _SpatialAdapter
-    so the point's pixel row/col is passed to predict_at().
-    """
     model = registry.get(req.model)
     if model is None:
         raise HTTPException(404, f"Model '{req.model}' not loaded")
@@ -669,16 +741,6 @@ async def predict_point(req: PredictPointRequest):
 
 @app.post("/api/predict/batch")
 async def predict_batch(req: PredictBatchRequest):
-    """
-    Predict flood susceptibility for a list of (lat, lng) points.
-
-    Points outside the modelled domain (river channel / non flood-able terrain)
-    are answered directly with in_domain=false and are not sent to the model.
-
-    When `explain=true`, each result also includes `top_factors` (top 5
-    mean-ablation attributions). This costs O(n_features) extra model
-    calls per point — use it for small batches.
-    """
     model = registry.get(req.model)
     if model is None:
         raise HTTPException(404, f"Model '{req.model}' not loaded")
@@ -716,7 +778,6 @@ async def predict_batch(req: PredictBatchRequest):
     if rows:
         X = np.vstack(rows)
 
-        # Spatial models need one coordinate per surviving row.
         if req.model in SPATIAL_MODELS:
             try:
                 model = _SpatialAdapter(
@@ -828,7 +889,6 @@ async def generate_susceptibility(req: GenerateRasterRequest):
     out_proba = PHASE3_DIR / f"susceptibility_{req.model}.tif"
     save_geotiff(raster, meta, out_proba)
 
-    # One set of breaks for the raster AND for point predictions.
     breaks = [float(b) for b in quantile_breaks(raster)]
     BREAKS_PATH.write_text(json.dumps({"model": req.model, "breaks": breaks}, indent=2))
 

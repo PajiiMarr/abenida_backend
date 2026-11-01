@@ -1,4 +1,3 @@
-
 name: Build and Deploy Backend
 
 on:
@@ -42,40 +41,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           RASTER_DIR="outputs/phase2/aligned"
-
           if [ ! -d "$RASTER_DIR" ]; then
             echo "ERROR: Raster directory not found: $RASTER_DIR"
             exit 1
           fi
-
           echo "Aligned raster files:"
           ls -lah "$RASTER_DIR"
-
           count=0
-
           for f in "$RASTER_DIR"/*.tif; do
             if [ ! -f "$f" ]; then
               continue
             fi
-
             count=$((count + 1))
             echo "Checking $f"
-
             if head -n 1 "$f" | grep -q "git-lfs.github.com/spec"; then
               echo "ERROR: $f is a Git LFS pointer, not the actual raster."
               exit 1
             fi
-
             file "$f"
           done
-
           if [ "$count" -eq 0 ]; then
             echo "ERROR: No TIFF files found in $RASTER_DIR"
             exit 1
           fi
-
           echo "Verified $count TIFF files."
 
       # 3. Set up Docker Buildx
@@ -110,7 +99,6 @@ jobs:
             --resource-group "${{ env.AZ_RG }}" \
             --query loginServer \
             --output tsv)
-
           echo "server=$SERVER" >> "$GITHUB_OUTPUT"
 
       # 8. Build the image with the real raster files and push it to ACR
@@ -134,6 +122,9 @@ jobs:
           ACR_SERVER: ${{ steps.acr.outputs.server }}
           IMAGE_TAG: ${{ steps.meta.outputs.tag }}
           FSI_API_KEY: ${{ secrets.FSI_API_KEY }}
+          BLOB_SAS_URL: ${{ secrets.BLOB_SAS_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
 
@@ -164,7 +155,10 @@ jobs:
             az containerapp secret set \
               --name "$ACA_APP" \
               --resource-group "$AZ_RG" \
-              --secrets "fsi-api-key=$FSI_API_KEY"
+              --secrets "fsi-api-key=$FSI_API_KEY" \
+                        "blob-sas-url=$BLOB_SAS_URL" \
+                        "supabase-url=$VITE_SUPABASE_URL" \
+                        "supabase-key=$SUPABASE_SERVICE_ROLE_KEY"
 
             az containerapp registry set \
               --name "$ACA_APP" \
@@ -179,6 +173,9 @@ jobs:
               --image "$IMAGE" \
               --set-env-vars \
                 "FSI_API_KEY=secretref:fsi-api-key" \
+                "BLOB_SAS_URL=secretref:blob-sas-url" \
+                "VITE_SUPABASE_URL=secretref:supabase-url" \
+                "SUPABASE_SERVICE_ROLE_KEY=secretref:supabase-key" \
                 "BASE_DIR=." \
                 "PREPROCESS_DIR=./outputs/phase2"
 
@@ -197,11 +194,17 @@ jobs:
               --registry-password "$ACR_PASS" \
               --cpu 2.0 \
               --memory 4.0Gi \
-              --min-replicas 0 \
+              --min-replicas 1 \
               --max-replicas 3 \
               --secrets "fsi-api-key=$FSI_API_KEY" \
+                        "blob-sas-url=$BLOB_SAS_URL" \
+                        "supabase-url=$VITE_SUPABASE_URL" \
+                        "supabase-key=$SUPABASE_SERVICE_ROLE_KEY" \
               --env-vars \
                 "FSI_API_KEY=secretref:fsi-api-key" \
+                "BLOB_SAS_URL=secretref:blob-sas-url" \
+                "VITE_SUPABASE_URL=secretref:supabase-url" \
+                "SUPABASE_SERVICE_ROLE_KEY=secretref:supabase-key" \
                 "BASE_DIR=." \
                 "PREPROCESS_DIR=./outputs/phase2"
           fi

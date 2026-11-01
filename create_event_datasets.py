@@ -5,6 +5,7 @@ Create event-specific datasets for May 2021 only
 import numpy as np
 import json
 from pathlib import Path
+import sys
 import rasterio
 
 print("=" * 70)
@@ -18,7 +19,7 @@ df = pd.read_csv(sample_path)
 points = np.column_stack([df['row'].values, df['col'].values])
 
 # Load registered flood map
-flood_path = Path("./outputs/phase2/registered_sar/may_2021_flood_map_registered.tif")
+flood_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("./outputs/phase2/registered_sar/may_2021_flood_map_registered.tif")
 
 with rasterio.open(flood_path) as src:
     flood_map = src.read(1)

@@ -7,6 +7,7 @@ them are rejected instead of guessed.
 """
 import logging
 from pathlib import Path
+import argparse
 
 import numpy as np
 import rasterio
@@ -130,23 +131,46 @@ def register_sar_to_dem(sar_path, output_path, dem_reference_path):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--event", type=str, help="Name of the event")
+    parser.add_argument("--flood", type=str, help="Path to flood_map.tif")
+    parser.add_argument("--diff", type=str, help="Path to diff_db.tif")
+    parser.add_argument("--ndfi", type=str, help="Path to ndfi.tif")
+    args = parser.parse_args()
+
     logger.info("=" * 70)
     logger.info("REGISTERING SAR TO DEM COORDINATE SYSTEM")
     logger.info("=" * 70)
 
-    for event_name, event_paths in SAR_EVENTS.items():
-        logger.info(f"\n--- Processing {event_name} ---")
-        for key, sar_path in event_paths.items():
+    # If args are provided (from the API upload), process just the new event
+    if args.event and args.flood:
+        logger.info(f"\n--- Processing dynamic event: {args.event} ---")
+        sar_paths = {"flood_map": Path(args.flood)}
+        if args.diff: sar_paths["diff_db"] = Path(args.diff)
+        if args.ndfi: sar_paths["ndfi"] = Path(args.ndfi)
+        
+        for key, sar_path in sar_paths.items():
             if not sar_path.exists():
                 logger.warning(f"File not found: {sar_path}")
                 continue
-            output_path = OUTPUT_DIR / f"{event_name}_{key}_registered.tif"
+            output_path = OUTPUT_DIR / f"{args.event}_{key}_registered.tif"
             try:
                 register_sar_to_dem(sar_path, output_path, DEM_PATH)
             except Exception as e:
                 logger.error(f"Failed to register {key}: {e}")
-                import traceback
-                traceback.print_exc()
+    else:
+        # Fallback to your hardcoded events if run manually
+        for event_name, event_paths in SAR_EVENTS.items():
+            logger.info(f"\n--- Processing {event_name} ---")
+            for key, sar_path in event_paths.items():
+                if not sar_path.exists():
+                    logger.warning(f"File not found: {sar_path}")
+                    continue
+                output_path = OUTPUT_DIR / f"{event_name}_{key}_registered.tif"
+                try:
+                    register_sar_to_dem(sar_path, output_path, DEM_PATH)
+                except Exception as e:
+                    logger.error(f"Failed to register {key}: {e}")
 
     logger.info("\n" + "=" * 70)
     logger.info("REGISTRATION COMPLETE")

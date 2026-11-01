@@ -1,16 +1,9 @@
 """
 Phase 3: Model Training Pipeline
-GWR → MARS → SVM → MGWR → Stacking Ensemble
+SVM → Stacking Ensemble
 
-Saves models with pickle.dump() so they can be loaded with pickle.load()
-without needing joblib.
-
-Note on feature sets:
-- GWR and MGWR require a non-singular design matrix. With 47 heavily
-  multicollinear engineered features, the local weight matrices become
-  singular. They are trained on the raw, physically distinct conditioning
-  factors listed in GWR_FEATURE_SET.
-- MARS, SVM, and Stacking are trained on the full engineered feature set.
+Note: GWR, MGWR, and MARS have been removed from the training loop 
+for Azure deployment to save resources and reduce training time.
 """
 import logging
 import numpy as np
@@ -25,10 +18,9 @@ import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
-from .models import (
-    GWRModel, MGWRModel, MARSModeL, SVMModel,
-    StackingEnsemble, ModelEvaluator
-)
+
+# Only import the models we are using
+from .models import SVMModel, StackingEnsemble, ModelEvaluator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,26 +42,10 @@ class ModelTrainingPipeline:
     Complete Phase 3: Model Training Pipeline
 
     Implements:
-    1. GWR (Geographically Weighted Regression) - Spatial non-stationarity
-    2. MARS (Multivariate Adaptive Regression Splines) - Non-linear thresholds
-    3. SVM (Support Vector Machine) - Classification with RBF kernel
-    4. MGWR (Multiscale GWR) - Benchmark model
-    5. Stacking Ensemble - Combines all models
-    6. 4-class risk classification (Low to Very High) with equal thresholds
+    1. SVM (Support Vector Machine) - Classification with RBF kernel
+    2. Stacking Ensemble - Combines multiple base models
+    3. 4-class risk classification (Low to Very High) with equal thresholds
     """
-
-    GWR_FEATURE_SET = [
-        "dem",
-        "slope",
-        "aspect",
-        "twi",
-        "hand",
-        "flow_accumulation",
-        "distance_to_river",
-        "drainage_density",
-        "chirps",
-        "gpm",
-    ]
 
     def __init__(self):
         self.output_dir = Path("./outputs/phase3")
@@ -87,12 +63,6 @@ class ModelTrainingPipeline:
         self.coords_train = None
         self.coords_test = None
 
-        self.X_gwr_train: Optional[np.ndarray] = None
-        self.X_gwr_test: Optional[np.ndarray] = None
-        self.coords_gwr_train: Optional[np.ndarray] = None
-        self.coords_gwr_test: Optional[np.ndarray] = None
-        self.feature_names_gwr: List[str] = []
-
         self.models = {}
         self.metrics = {}
         self.cv_results = {}
@@ -101,23 +71,6 @@ class ModelTrainingPipeline:
         self.risk_bins = [0, 0.25, 0.50, 0.75, 1.0]
 
         self.model_descriptions = {
-            'gwr': (
-                "GWR (Geographically Weighted Regression) checks whether the relationship "
-                "between flood-related features (like elevation and slope) and "
-                "flood risk changes from one part of the city to another, instead of assuming "
-                "one fixed relationship everywhere."
-            ),
-            'mars': (
-                "MARS (Multivariate Adaptive Regression Splines) looks for threshold effects — "
-                "points where a feature (e.g. slope or TWI) starts to matter a lot "
-                "more or less to flood risk — rather than assuming a straight-line relationship."
-            ),
-            'mgwr': (
-                "MGWR (Multiscale GWR) lets each feature have its own local scale of "
-                "influence, instead of one shared bandwidth for all features. Here it is "
-                "fitted with a custom backfitting routine; the intercept varies at a very "
-                "local scale while the other effects are close to constant across the area."
-            ),
             'svm': (
                 "SVM (Support Vector Machine) with an RBF kernel draws a flexible boundary "
                 "between flood-prone and non-flood-prone areas based on all features combined, "
@@ -153,7 +106,6 @@ class ModelTrainingPipeline:
         self.coords = df[['row', 'col']].values
 
         logger.info(f"Loaded dataset with {len(self.feature_names)} features")
-        logger.info(f"  Features: {', '.join(self.feature_names[:10])}...")
 
         self.X_train, self.X_test, self.y_train, self.y_test, \
         self.coords_train, self.coords_test = train_test_split(
@@ -165,174 +117,6 @@ class ModelTrainingPipeline:
 
         logger.info(f"Train set: {len(self.X_train)} samples")
         logger.info(f"Test set: {len(self.X_test)} samples")
-
-        # ------------------------------------------------------------------
-        # Reduced feature set for GWR / MGWR ONLY.
-        # MARS, SVM and Stacking keep the full feature set (self.X_train).
-        # ------------------------------------------------------------------
-        available = [f for f in self.GWR_FEATURE_SET if f in self.feature_names]
-        missing = [f for f in self.GWR_FEATURE_SET if f not in self.feature_names]
-
-        if missing:
-            logger.warning(
-                f"GWR/MGWR feature(s) not found in dataset, skipping: {missing}"
-            )
-
-        idx = [self.feature_names.index(f) for f in available]
-
-        # Drop constant columns for GWR/MGWR: they make the local design
-        # matrix singular. Other models are unaffected.
-        varying = [i for i in idx if np.nanstd(self.X_train[:, i]) > 1e-8]
-        dropped = [self.feature_names[i] for i in idx if i not in varying]
-        if dropped:
-            logger.warning(f"GWR/MGWR: dropping constant feature(s): {dropped}")
-        idx = varying
-        available = [self.feature_names[i] for i in idx]
-
-        if len(available) < 3:
-            logger.error(
-                f"Only {len(available)} usable GWR features available. "
-                f"GWR/MGWR will not be trained."
-            )
-            self.X_gwr_train = None
-            self.X_gwr_test = None
-            self.coords_gwr_train = None
-            self.coords_gwr_test = None
-            self.feature_names_gwr = []
-        else:
-            self.X_gwr_train = self.X_train[:, idx]
-            self.X_gwr_test = self.X_test[:, idx]
-            self.coords_gwr_train = self.coords_train
-            self.coords_gwr_test = self.coords_test
-            self.feature_names_gwr = available
-
-            logger.info(
-                f"GWR/MGWR reduced feature set: {len(available)} features "
-                f"({', '.join(available)})"
-            )
-            logger.info(f"  X_gwr_train shape: {self.X_gwr_train.shape}")
-            logger.info(f"  X_gwr_test shape: {self.X_gwr_test.shape}")
-
-
-    # =========================================================================
-    # GWR — reduced feature set
-    # =========================================================================
-    def train_gwr(self):
-        """Train GWR on the reduced (raw) feature set."""
-        logger.info("\n" + "=" * 60)
-        logger.info("Training GWR Model (reduced raw feature set)")
-        logger.info("=" * 60)
-
-        if self.coords_gwr_train is None or self.X_gwr_train is None:
-            logger.warning("GWR feature set not available. Skipping GWR.")
-            return
-
-        try:
-            X_train = self.X_gwr_train
-            X_test = self.X_gwr_test
-            coords_train = self.coords_gwr_train
-            coords_test = self.coords_gwr_test
-
-            logger.info(f"Using GWR features: {X_train.shape}")
-            logger.info(f"  Feature names: {self.feature_names_gwr}")
-
-            gwr = GWRModel()
-            gwr.fit(coords_train, X_train, self.y_train)
-
-            # In-sample predictions (at training coordinates).
-            y_train_pred = gwr.predict_training()
-
-            # Genuine out-of-sample predictions at the test coordinates.
-            # The previous version sliced training predictions and compared
-            # them to test labels, which is why test AUC was ~0.51.
-            y_test_pred = gwr.predict_at(coords_test, X_test)
-
-            train_metrics = ModelEvaluator.evaluate(
-                self.y_train,
-                (y_train_pred >= 0.5).astype(int),
-                y_train_pred,
-            )
-            test_metrics = ModelEvaluator.evaluate(
-                self.y_test,
-                (y_test_pred >= 0.5).astype(int),
-                y_test_pred,
-            )
-
-            self.models["gwr"] = gwr
-            self.metrics["gwr"] = {
-                "train": train_metrics,
-                "test": test_metrics,
-                "summary": gwr.get_summary(),
-                "feature_names": self.feature_names_gwr,
-                "coords_used": True,
-            }
-
-            logger.info(f"GWR Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"GWR Testing - AUC: {test_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"GWR R²: {gwr.get_summary().get('r2', 0):.4f}")
-
-            _save_model(gwr, self.output_dir / "gwr_model.pkl")
-
-        except Exception as e:
-            logger.error(f"GWR training failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-    # =========================================================================
-    # MARS — full feature set
-    # =========================================================================
-    def train_mars(self):
-        """Train MARS on the full engineered feature set."""
-        logger.info("\n" + "=" * 60)
-        logger.info("Training MARS Model (full engineered feature set)")
-        logger.info("=" * 60)
-
-        try:
-            X_train = self.X_train
-            X_test = self.X_test
-            logger.info(f"Using features: {X_train.shape}")
-
-            mars = MARSModeL(max_degree=2, penalty=3.0, random_state=42)
-            mars.fit(X_train, self.y_train)
-
-            y_train_proba = mars.predict_proba(X_train)
-            y_test_proba = mars.predict_proba(X_test)
-
-            y_train_pred = y_train_proba[:, 1] if y_train_proba.ndim == 2 else y_train_proba.flatten()
-            y_test_pred = y_test_proba[:, 1] if y_test_proba.ndim == 2 else y_test_proba.flatten()
-
-            y_train_class = (y_train_pred > 0.5).astype(int)
-            y_test_class = (y_test_pred > 0.5).astype(int)
-
-            train_metrics = ModelEvaluator.evaluate(self.y_train, y_train_class, y_train_pred)
-            test_metrics = ModelEvaluator.evaluate(self.y_test, y_test_class, y_test_pred)
-
-            self.models['mars'] = mars
-            self.metrics['mars'] = {
-                'train': train_metrics,
-                'test': test_metrics,
-                'summary': mars.get_summary(),
-                'feature_importance': (
-                    mars.get_feature_importance().to_dict()
-                    if hasattr(mars, 'get_feature_importance') else {}
-                ),
-                'hinge_functions': (
-                    mars.get_hinge_functions()
-                    if hasattr(mars, 'get_hinge_functions') else []
-                ),
-                'feature_names': self.feature_names,
-                'cv_results': {},
-            }
-
-            logger.info(f"MARS Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"MARS Test - AUC: {test_metrics.get('roc_auc', 0):.4f}")
-
-            _save_model(mars, self.output_dir / "mars_model.pkl")
-
-        except Exception as e:
-            logger.error(f"MARS training failed: {e}")
-            import traceback
-            traceback.print_exc()
 
     # =========================================================================
     # SVM — full feature set
@@ -383,69 +167,6 @@ class ModelTrainingPipeline:
             traceback.print_exc()
 
     # =========================================================================
-    # MGWR — reduced feature set
-    # =========================================================================
-    def train_mgwr(self):
-        """Train the numpy backfitting multiscale GWR on the reduced feature set."""
-        logger.info("\n" + "=" * 60)
-        logger.info("Training MGWR (reduced raw feature set)")
-        logger.info("=" * 60)
-
-        if self.coords_gwr_train is None or self.X_gwr_train is None:
-            logger.warning("MGWR feature set not available. Skipping MGWR.")
-            return
-
-        try:
-            X_train = self.X_gwr_train
-            X_test = self.X_gwr_test
-            coords_train = self.coords_gwr_train
-            coords_test = self.coords_gwr_test
-
-            logger.info(f"Using MGWR features: {X_train.shape}")
-            logger.info(f"  Feature names: {self.feature_names_gwr}")
-
-            mgwr = MGWRModel(multi=True)
-            mgwr.fit(coords_train, X_train, self.y_train)
-
-            y_train_pred = mgwr.predict_training()
-            y_test_pred = mgwr.predict_at(coords_test, X_test)
-
-            train_metrics = ModelEvaluator.evaluate(
-                self.y_train,
-                (y_train_pred >= 0.5).astype(int),
-                y_train_pred,
-            )
-            test_metrics = ModelEvaluator.evaluate(
-                self.y_test,
-                (y_test_pred >= 0.5).astype(int),
-                y_test_pred,
-            )
-
-            summary = mgwr.get_summary()
-
-            self.models['mgwr'] = mgwr
-            self.metrics['mgwr'] = {
-                'train': train_metrics,
-                'test': test_metrics,
-                'summary': summary,
-                'feature_names': self.feature_names_gwr,
-                'coords_used': True,
-            }
-
-            logger.info(f"MGWR Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"MGWR Testing  - AUC: {test_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"MGWR R²: {summary.get('r2', 0):.4f}")
-            if summary.get("fallback_used"):
-                logger.warning(f"MGWR used fallback: {summary['fallback_used']}")
-
-            _save_model(mgwr, self.output_dir / "mgwr_model.pkl")
-
-        except Exception as e:
-            logger.error(f"MGWR training failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-    # =========================================================================
     # STACKING — full feature set
     # =========================================================================
     def train_stacking(self):
@@ -459,10 +180,6 @@ class ModelTrainingPipeline:
             X_test = self.X_test
             logger.info(f"Using features: {X_train.shape}")
 
-            # Rely on StackingEnsemble's internal defaults. The previous
-            # version passed an explicit SVC(probability=True, ...) here,
-            # which bypassed the internal probability=False default and
-            # triggered the sklearn 1.9 deprecation warning 4× per fit.
             stacking = StackingEnsemble(base_models=None)
             stacking.fit(X_train, self.y_train)
 
@@ -514,9 +231,6 @@ class ModelTrainingPipeline:
         elif 'svm' in self.models:
             best_model = self.models['svm']
             logger.info("Using SVM for risk classification")
-        elif 'mars' in self.models:
-            best_model = self.models['mars']
-            logger.info("Using MARS for risk classification")
         else:
             logger.warning("No model available for risk classification")
             return
@@ -768,7 +482,8 @@ class ModelTrainingPipeline:
             lines.append("| Model | Test AUC | Rating | Test Accuracy | Test F1 |")
             lines.append("|---|---|---|---|---|")
 
-            model_order = ['gwr', 'mars', 'svm', 'mgwr', 'stacking']
+            # Only iterate over the models we trained
+            model_order = ['svm', 'stacking']
             for name in model_order:
                 if name not in self.metrics:
                     continue
@@ -892,21 +607,12 @@ class ModelTrainingPipeline:
             import traceback
             traceback.print_exc()
 
-    def train_all(self, enable_mgwr: bool = True):
+    def train_all(self, enable_mgwr: bool = True): # kept param for compatibility
         self.load_data()
 
-        self.train_gwr()       # reduced features
-        self.train_mars()      # full features
-        self.train_svm()       # full features
-
-        if enable_mgwr:
-            self.train_mgwr()  # reduced features — slow, may fail, opt-in
-        else:
-            logger.info("\n" + "=" * 60)
-            logger.info("MGWR SKIPPED (--no-mgwr was passed)")
-            logger.info("=" * 60)
-
-        self.train_stacking()  # full features
+        # Only train the 2 models needed for Azure
+        self.train_svm()       
+        self.train_stacking()  
 
         self.generate_risk_maps()
         self.save_results()
@@ -918,6 +624,7 @@ class ModelTrainingPipeline:
 
 def main():
     import sys
+    # The --no-mgwr flag is no longer strictly needed but kept for compatibility
     enable_mgwr = "--no-mgwr" not in sys.argv 
     pipeline = ModelTrainingPipeline()
     pipeline.train_all(enable_mgwr=enable_mgwr)

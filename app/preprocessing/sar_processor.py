@@ -12,6 +12,8 @@ from typing import Tuple, Optional, Dict, List
 import json
 from scipy.ndimage import distance_transform_edt
 from sklearn.cluster import KMeans
+from .config import SAR_REGISTERED
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,8 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        events = ['oct_2022', 'jan_2023', 'jul_2024']
+        # Dynamically get all registered events from config
+        events = list(SAR_REGISTERED.keys())
         sar_data = {}
         
         for event in events:
@@ -56,7 +59,6 @@ class SARProcessor:
             if ndfi_path.exists():
                 with rasterio.open(ndfi_path) as src:
                     event_data['ndfi'] = src.read(1)
-                logger.info(f"Loaded ndfi for {event}: {event_data['ndfi'].shape}")
             else:
                 event_data['ndfi'] = None
             
@@ -65,7 +67,6 @@ class SARProcessor:
             if vh_path.exists():
                 with rasterio.open(vh_path) as src:
                     event_data['vh'] = src.read(1)
-                logger.info(f"Loaded vh for {event}: {event_data['vh'].shape}")
             else:
                 event_data['vh'] = None
             
@@ -73,6 +74,7 @@ class SARProcessor:
         
         self.sar_data = sar_data
         return sar_data
+
     
     def generate_flood_inventory(self) -> Dict:
         """Generate flood inventory from loaded flood maps"""
@@ -202,12 +204,23 @@ class SARProcessor:
                              n_samples: int = 20000,
                              flood_ratio: float = 0.5,
                              sampling_method: str = 'stratified',
-                             land_mask_path: Path = Path("./outputs/phase2/aligned/chirps_aligned.tif")
+                             land_mask_path: Path = Path("./outputs/phase2/aligned/chirps_aligned.tif"),
+                             coast_buffer_m: float = 100.0,
+                             drop_shore_connected: bool = True,
+                             exclude_coastal_nonflood: bool = True
                              ) -> Tuple[np.ndarray, np.ndarray]:
         """Create balanced sample points on the aligned 12.5 m grid (flood-able land only).
-        Each point is tagged with the flood event it was sampled from (self.sample_events)."""
+        Each point is tagged with the flood event it was sampled from (self.sample_events).
+
+        Storm-surge exclusion (not riverine/pluvial flooding):
+          - flood pixels within `coast_buffer_m` of the sea are dropped
+          - if `drop_shore_connected`, whole flood patches touching that coastal zone are dropped
+          - if `exclude_coastal_nonflood`, non-flood pixels in the coastal zone are also dropped
+            (otherwise the model would learn 'near shore = never flood')
+        """
         from rasterio.warp import reproject, Resampling
         from rasterio.coords import BoundingBox
+        from scipy.ndimage import label as cc_label
 
         if flood_inventory is None:
             flood_inventory = self.flood_inventory
@@ -225,6 +238,13 @@ class SARProcessor:
         src_transform = self.metadata['transform']
         src_crs = self.metadata['crs']
         logger.info(f"Land mask: {land.sum():,} land pixels of {land.size:,} ({land.mean()*100:.1f}%)")
+
+        # Coastal zone: land pixels within coast_buffer_m of the sea (storm-surge influence)
+        res_m = abs(dst_transform.a)
+        coast_dist_m = distance_transform_edt(land).astype(np.float32) * res_m
+        near_shore = land & (coast_dist_m <= coast_buffer_m)
+        del coast_dist_m
+        logger.info(f"Coastal zone (<= {coast_buffer_m:.0f} m from sea): {near_shore.sum():,} pixels")
 
         # Terrain mask: keep only flood-able terrain (removes radar shadow/layover false positives)
         def _load_aligned(name):
@@ -263,8 +283,27 @@ class SARProcessor:
                           resampling=Resampling.nearest)
                 raw_flood_map, cover = resampled, covered.astype(bool)
 
+            # Storm-surge exclusion: coastal zone + flood patches physically connected to it
+            raw_flood = (raw_flood_map > 0) & land & cover
+            shore_connected = np.zeros(land.shape, dtype=bool)
+            if drop_shore_connected:
+                lab, n_cc = cc_label(raw_flood, structure=np.ones((3, 3), dtype=bool))
+                touching = np.unique(lab[raw_flood & near_shore])
+                touching = touching[touching > 0]
+                if touching.size:
+                    lut = np.zeros(n_cc + 1, dtype=bool)
+                    lut[touching] = True
+                    shore_connected = lut[lab]
+                del lab
+            surge_zone = near_shore | shore_connected
+            removed_surge = int(np.sum(raw_flood & surge_zone))
+
             # Sea / uncovered / non-flood-able pixels become -1: neither flood (>0) nor non-flood (==0)
             flood_map = np.where(land & cover & terrain_ok, raw_flood_map.astype(np.int16), -1)
+            if exclude_coastal_nonflood:
+                flood_map[surge_zone] = -1
+            else:
+                flood_map[(flood_map > 0) & surge_zone] = -1
 
             flood_rows, flood_cols = np.where(flood_map > 0)
             flood_coords = np.column_stack([flood_rows, flood_cols])
@@ -277,7 +316,8 @@ class SARProcessor:
             removed_sea = int(np.sum((raw_flood_map > 0) & ~land))
             removed_terrain = int(np.sum((raw_flood_map > 0) & land & ~terrain_ok))
             logger.info(f"{event}: {len(flood_coords)} flood, {len(non_flood_coords)} non-flood pixels "
-                        f"({removed_sea:,} sea and {removed_terrain:,} steep/high 'flood' pixels removed)")
+                        f"({removed_sea:,} sea, {removed_terrain:,} steep/high, "
+                        f"{removed_surge:,} coastal/storm-surge 'flood' pixels removed)")
 
             if len(flood_coords) > 0:
                 if sampling_method == 'stratified':
@@ -417,6 +457,8 @@ class SARProcessor:
             logger.info(f"  Event {ev}: {cnt} points ({n_f} flood, {cnt - n_f} non-flood)")
 
         return sample_points, sample_labels
+    
+
 
     def save_sample_points(self, sample_points: np.ndarray = None,
                            sample_labels: np.ndarray = None,

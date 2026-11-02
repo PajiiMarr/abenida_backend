@@ -11,14 +11,15 @@ import logging
 import os
 import secrets
 from datetime import datetime
-import subprocess # Added for retraining
-import shutil # Added for file handling
+import subprocess
+import shutil
+import pickle  # Added for loading per-event models
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile, File, Form, BackgroundTasks # Added BackgroundTasks
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -54,8 +55,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_credentials=False,  # Must be False if allow_origins is ["*"]
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -73,7 +74,6 @@ else:
     )
 
 def require_key(x_api_key: str = Header(..., description="API key")):
-    """Reject requests without a valid X-API-Key header."""
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -92,22 +92,18 @@ except Exception as e:
     supabase = None
 
 def upload_to_azure(file_bytes: bytes, blob_name: str):
-    """Uploads bytes to Azure Blob Storage using the provided SAS URL."""
     if not BLOB_SAS_URL:
         raise ValueError("BLOB_SAS_URL is not configured.")
-    
     base_url, sas_token = BLOB_SAS_URL.split("?", 1)
     blob_url = f"{base_url}/{blob_name}?{sas_token}"
-    
     blob_client = BlobClient.from_blob_url(blob_url)
     blob_client.upload_blob(file_bytes, overwrite=True)
-    
     return f"{base_url}/{blob_name}"
 
 # ---------- Paths & Data ----------
 BASE_DIR = Path(os.environ.get("BASE_DIR") or ".")
 OUTPUT_DIR = Path(os.environ.get("PREPROCESS_DIR") or BASE_DIR / "outputs/phase2")
-PHASE3_DIR = BASE_DIR / "outputs/phase3"
+PHASE3_DIR = OUTPUT_DIR.parent / "phase3"
 BREAKS_PATH = PHASE3_DIR / "risk_breaks.json"
 
 try:
@@ -137,15 +133,6 @@ elif hasattr(_sc, "transform"):
     logger.info(f"registry.scaler is a fitted {type(_sc).__name__}")
 elif isinstance(_sc, dict):
     logger.info(f"registry.scaler is a dict with keys: {sorted(_sc.keys())}")
-    nested = _sc.get("scaler", None)
-    if nested is None:
-        logger.info("  -> no nested 'scaler' key")
-    elif hasattr(nested, "transform"):
-        logger.info(f"  -> nested scaler is a fitted {type(nested).__name__}")
-    elif isinstance(nested, dict):
-        logger.info(f"  -> nested scaler is a dict: {sorted(nested.keys())}")
-    else:
-        logger.info(f"  -> nested scaler is {type(nested).__name__}")
 else:
     logger.warning(f"registry.scaler is an unexpected type: {type(_sc).__name__}")
 
@@ -154,12 +141,14 @@ class PredictPointRequest(BaseModel):
     lat: float
     lng: float
     model: str = "stacking"
+    event: str = "overall" # Added event parameter
     features: Optional[dict] = None
     explain: bool = True
 
 class PredictBatchRequest(BaseModel):
     points: List[dict]
     model: str = "stacking"
+    event: str = "overall" # Added event parameter
     explain: bool = False
 
 class GenerateRasterRequest(BaseModel):
@@ -417,12 +406,9 @@ def _feature_attributions(
 
 def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_ndfi_path: str, event_name: str):
     logger.info(f"🚀 Starting FULL retraining pipeline for event: {event_name}")
-    
-    # 1. Inject paths into environment so config.py picks them up
     os.environ['DYNAMIC_EVENT_NAME'] = event_name
 
     try:
-        # 2. Register the SAR files to the DEM grid
         logger.info("Running register_sar_to_dem.py...")
         register_result = subprocess.run(
             ["python", "register_sar_to_dem.py", 
@@ -437,7 +423,6 @@ def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_
             logger.error(f"Registration failed:\n{register_result.stderr}")
             return
 
-        # 3. Run Phase 2 (Preprocessing)
         logger.info("Running app.preprocessing.pipeline --standardize...")
         preprocess_result = subprocess.run(
             ["python", "-m", "app.preprocessing.pipeline", "--standardize"],
@@ -448,7 +433,6 @@ def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_
             logger.error(f"Preprocessing failed:\n{preprocess_result.stderr}")
             return
 
-        # 4. Run Phase 3 (Training)
         logger.info("Running app.training.pipeline...")
         train_result = subprocess.run(
             ["python", "-m", "app.training.pipeline"],
@@ -483,7 +467,8 @@ async def root():
             "/api/generate_susceptibility",
             "/api/susceptibility/at",
             "/api/download/{file_type}",
-            "/api/events/upload"
+            "/api/events/upload",
+            "/api/events/models"
         ],
     }
 
@@ -516,6 +501,44 @@ async def list_models():
             "channel_buffer_m": CHANNEL_BUFFER_M,
         },
     }
+
+@app.get("/api/events/models")
+async def list_event_models():
+    """Fetch available trained models and metrics for each flood event."""
+    if not PHASE3_DIR.exists():
+        return {"events": []}
+
+    events = []
+    for category_dir in PHASE3_DIR.iterdir():
+        if category_dir.is_dir():
+            event_name = category_dir.name
+            models = []
+            
+            if (category_dir / "svm_model.pkl").exists():
+                models.append("svm")
+            if (category_dir / "stacking_model.pkl").exists():
+                models.append("stacking")
+            
+            metrics = []
+            metrics_path = category_dir / "model_comparison.csv"
+            if metrics_path.exists():
+                try:
+                    df = pd.read_csv(metrics_path)
+                    metrics = df.to_dict(orient="records")
+                except Exception as e:
+                    logger.warning(f"Could not read metrics for {event_name}: {e}")
+
+            if not models:
+                continue
+
+            events.append({
+                "event": event_name,
+                "available_models": models,
+                "metrics": metrics
+            })
+
+    events.sort(key=lambda x: (x["event"] != "overall", x["event"]))
+    return {"events": events}
 
 @app.get("/api/metrics")
 async def get_metrics():
@@ -559,10 +582,9 @@ async def get_gwpca_results():
     except Exception as e:
         raise HTTPException(404, f"GWPCA results not found: {e}")
 
-# ---------- EVENT UPLOAD & RETRAIN ENDPOINT ----------
 @app.post("/api/events/upload")
 async def upload_flood_event(
-    background_tasks: BackgroundTasks, # Added BackgroundTasks
+    background_tasks: BackgroundTasks,
     eventName: str = Form(...),
     rainfallDetails: Optional[str] = Form(None),
     affectedBarangays: Optional[str] = Form(None),
@@ -589,13 +611,11 @@ async def upload_flood_event(
         diff_db_bytes = await diffDb.read()
         ndfi_bytes = await ndfi.read()
 
-        # 1. Upload to Azure
         logger.info(f"Uploading files for event: {safe_event_name} to Azure Blob...")
         flood_url = upload_to_azure(flood_map_bytes, f"events/{safe_event_name}/flood_map.tif")
         diff_url = upload_to_azure(diff_db_bytes, f"events/{safe_event_name}/diff_db.tif")
         ndfi_url = upload_to_azure(ndfi_bytes, f"events/{safe_event_name}/ndfi.tif")
 
-        # 2. Insert into Supabase
         logger.info("Inserting event metadata into Supabase...")
         db_payload = {
             "event_name": eventName,
@@ -619,7 +639,6 @@ async def upload_flood_event(
         if not response.data:
             raise Exception("Failed to insert data into Supabase (empty response).")
 
-        # 3. Save files locally for the training pipeline
         local_dir = Path(f"./data/incoming/{safe_event_name}")
         local_dir.mkdir(parents=True, exist_ok=True)
         
@@ -631,7 +650,6 @@ async def upload_flood_event(
         with open(local_diff_db, "wb") as f: f.write(diff_db_bytes)
         with open(local_ndfi, "wb") as f: f.write(ndfi_bytes)
 
-        # 4. Trigger the background retraining task
         background_tasks.add_task(
             run_retraining_pipeline,
             str(local_flood_map),
@@ -650,12 +668,15 @@ async def upload_flood_event(
         logger.error(f"Error uploading event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ---------- Prediction endpoints ----------
 @app.post("/api/predict/point")
 async def predict_point(req: PredictPointRequest):
-    model = registry.get(req.model)
-    if model is None:
-        raise HTTPException(404, f"Model '{req.model}' not loaded")
+    # Load the specific event model
+    model_path = PHASE3_DIR / req.event / f"{req.model}_model.pkl"
+    if not model_path.exists():
+        raise HTTPException(404, f"Model '{req.model}' for event '{req.event}' not found")
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
 
     names = _registry_feature_names()
 
@@ -691,14 +712,6 @@ async def predict_point(req: PredictPointRequest):
         except Exception as e:
             raise HTTPException(422, f"Could not build feature vector at point: {e}")
 
-    if req.model in SPATIAL_MODELS:
-        try:
-            model = _SpatialAdapter(model, names, [(req.lat, req.lng)])
-        except Exception as e:
-            raise HTTPException(
-                422, f"Could not build spatial context for '{req.model}': {e}"
-            )
-
     try:
         x_scaled = _apply_scaler(x)
     except Exception as e:
@@ -720,6 +733,7 @@ async def predict_point(req: PredictPointRequest):
         "lat": req.lat,
         "lng": req.lng,
         "model": req.model,
+        "event": req.event,
         "in_domain": True,
         **_risk_payload(proba),
     }
@@ -738,9 +752,13 @@ async def predict_point(req: PredictPointRequest):
 
 @app.post("/api/predict/batch")
 async def predict_batch(req: PredictBatchRequest):
-    model = registry.get(req.model)
-    if model is None:
-        raise HTTPException(404, f"Model '{req.model}' not loaded")
+    # Load the specific event model
+    model_path = PHASE3_DIR / req.event / f"{req.model}_model.pkl"
+    if not model_path.exists():
+        raise HTTPException(404, f"Model '{req.model}' for event '{req.event}' not found")
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
 
     names = _registry_feature_names()
 
@@ -769,22 +787,10 @@ async def predict_batch(req: PredictBatchRequest):
     if not rows and not special:
         raise HTTPException(422, f"No points could be sampled: {errors}")
 
-    raw_model = model
     probas = np.array([])
 
     if rows:
         X = np.vstack(rows)
-
-        if req.model in SPATIAL_MODELS:
-            try:
-                model = _SpatialAdapter(
-                    raw_model, names,
-                    [(req.points[i]["lat"], req.points[i]["lng"]) for i in row_idx],
-                )
-            except Exception as e:
-                raise HTTPException(
-                    422, f"Could not build spatial context for '{req.model}': {e}"
-                )
 
         try:
             X_scaled = _apply_scaler(X)
@@ -820,12 +826,8 @@ async def predict_batch(req: PredictBatchRequest):
 
         if req.explain:
             try:
-                m_explain = (
-                    _SpatialAdapter(raw_model, names, [(p["lat"], p["lng"])])
-                    if req.model in SPATIAL_MODELS else model
-                )
                 entry["top_factors"] = _feature_attributions(
-                    m_explain,
+                    model,
                     X_scaled[local_i:local_i + 1],
                     names,
                     top_k=5,
@@ -950,7 +952,6 @@ async def susceptibility_at(lat: float, lng: float, model: str = "stacking"):
     return payload
 
 
-# ---------- File download ----------
 @app.get(
     "/api/download/{file_type}",
     dependencies=[Depends(require_key)],

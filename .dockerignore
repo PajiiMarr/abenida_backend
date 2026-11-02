@@ -34,7 +34,7 @@ add_rainfall_features.py
 check_coords.py
 # create_event_datasets.py
 # extract_event_rainfall.py
-register_sar_to_dem.py
+# register_sar_to_dem.py
 # train_model.py
 pyGWRx/
 

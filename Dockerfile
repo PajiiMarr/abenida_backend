@@ -42,7 +42,7 @@ COPY app ./app
 
 # Copy the root-level python scripts needed for the background retraining pipeline
 COPY register_sar_to_dem.py .
-COPY train_model.py .
+# COPY train_model.py .
 # COPY retrain_new_event.py .
 # COPY create_event_datasets.py .
 

@@ -32,10 +32,10 @@ activate.sh
 run.sh
 add_rainfall_features.py
 check_coords.py
-create_event_datasets.py
-extract_event_rainfall.py
+# create_event_datasets.py
+# extract_event_rainfall.py
 register_sar_to_dem.py
-train_model.py
+# train_model.py
 pyGWRx/
 
 # outputs/phase2/registered_sar/

@@ -50,11 +50,11 @@ CLIMATIC_RASTERS = {
 REGISTERED_SAR_DIR = Path("./outputs/phase2/registered_sar")
 
 SAR_REGISTERED = {
-    "may_2021": {
-        "flood_map": REGISTERED_SAR_DIR / "may_2021_flood_map_registered.tif",
-        "ndfi": REGISTERED_SAR_DIR / "may_2021_ndfi_registered.tif",
-        "vh": REGISTERED_SAR_DIR / "may_2021_vh_registered.tif",
-    },
+    # "may_2021": {
+    #     "flood_map": REGISTERED_SAR_DIR / "may_2021_flood_map_registered.tif",
+    #     "ndfi": REGISTERED_SAR_DIR / "may_2021_ndfi_registered.tif",
+    #     "vh": REGISTERED_SAR_DIR / "may_2021_vh_registered.tif",
+    # },
     "oct_2022": {
         "flood_map": REGISTERED_SAR_DIR / "oct_2022_flood_map_registered.tif",
         "ndfi": REGISTERED_SAR_DIR / "oct_2022_ndfi_registered.tif",
@@ -66,21 +66,21 @@ SAR_REGISTERED = {
         "ndfi":      REGISTERED_SAR_DIR / "jan_2023_ndfi_registered.tif",
         "diff_db":   REGISTERED_SAR_DIR / "jan_2023_diff_db_registered.tif",
     },
-    "jan31_2023": {
-        "flood_map": REGISTERED_SAR_DIR / "jan31_2023_flood_map_registered.tif",
-        "ndfi":      REGISTERED_SAR_DIR / "jan31_2023_ndfi_registered.tif",
-        "diff_db":   REGISTERED_SAR_DIR / "jan31_2023_diff_db_registered.tif",
-    },
-    "aug_2023": {
-        "flood_map": REGISTERED_SAR_DIR / "aug_2023_flood_map_registered.tif",
-        "ndfi":      REGISTERED_SAR_DIR / "aug_2023_ndfi_registered.tif",
-        "diff_db":   REGISTERED_SAR_DIR / "aug_2023_diff_db_registered.tif",
-    },
-    "jun_2024": {
-        "flood_map": REGISTERED_SAR_DIR / "jun_2024_flood_map_registered.tif",
-        "ndfi":      REGISTERED_SAR_DIR / "jun_2024_ndfi_registered.tif",
-        "diff_db":   REGISTERED_SAR_DIR / "jun_2024_diff_db_registered.tif",
-    },
+    # "jan31_2023": {
+    #     "flood_map": REGISTERED_SAR_DIR / "jan31_2023_flood_map_registered.tif",
+    #     "ndfi":      REGISTERED_SAR_DIR / "jan31_2023_ndfi_registered.tif",
+    #     "diff_db":   REGISTERED_SAR_DIR / "jan31_2023_diff_db_registered.tif",
+    # },
+    # "aug_2023": {
+    #     "flood_map": REGISTERED_SAR_DIR / "aug_2023_flood_map_registered.tif",
+    #     "ndfi":      REGISTERED_SAR_DIR / "aug_2023_ndfi_registered.tif",
+    #     "diff_db":   REGISTERED_SAR_DIR / "aug_2023_diff_db_registered.tif",
+    # },
+    # "jun_2024": {
+    #     "flood_map": REGISTERED_SAR_DIR / "jun_2024_flood_map_registered.tif",
+    #     "ndfi":      REGISTERED_SAR_DIR / "jun_2024_ndfi_registered.tif",
+    #     "diff_db":   REGISTERED_SAR_DIR / "jun_2024_diff_db_registered.tif",
+    # },
     "jul_2024": {
         "flood_map": REGISTERED_SAR_DIR / "jul_2024_flood_map_registered.tif",
         "ndfi":      REGISTERED_SAR_DIR / "jul_2024_ndfi_registered.tif",

@@ -1,13 +1,11 @@
 """
 Phase 3: Model Training Pipeline
 SVM → Stacking Ensemble
-
-Note: GWR, MGWR, and MARS have been removed from the training loop 
-for Azure deployment to save resources and reduce training time.
 """
 import logging
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import json
 import pickle
 from pathlib import Path
@@ -19,7 +17,6 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
 
-# Only import the models we are using
 from .models import SVMModel, StackingEnsemble, ModelEvaluator
 
 logging.basicConfig(
@@ -47,8 +44,9 @@ class ModelTrainingPipeline:
     3. 4-class risk classification (Low to Very High) with equal thresholds
     """
 
-    def __init__(self):
-        self.output_dir = Path("./outputs/phase3")
+    def __init__(self, category: str = "overall"):
+        self.category = category
+        self.output_dir = Path(f"./outputs/phase3/{category}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.X = None
@@ -85,19 +83,54 @@ class ModelTrainingPipeline:
 
     def load_data(self, phase2_dir: Path = Path("./outputs/phase2")):
         logger.info("=" * 60)
-        logger.info("Loading ENGINEERED dataset from Phase 2...")
+        logger.info(f"Loading ENGINEERED dataset for category: {self.category}")
         logger.info("=" * 60)
 
-        dataset_path = phase2_dir / "full_dataset_engineered_standardized.csv"
-
+        # Prefer the freshly generated engineered CSV
+        dataset_path = phase2_dir / "full_dataset_engineered.csv"
         if not dataset_path.exists():
-            logger.warning("Engineered dataset not found! Falling back to standardized.")
-            dataset_path = phase2_dir / "full_dataset_standardized.csv"
+            dataset_path = phase2_dir / "full_dataset_engineered_standardized.csv"
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found in {phase2_dir}")
 
+        samples_path = phase2_dir / "sample_points/sample_points.shp"
+        if not samples_path.exists():
+            raise FileNotFoundError(f"Sample points shapefile not found: {samples_path}")
+
+        # 1. Load feature dataset
         df = pd.read_csv(dataset_path)
-        logger.info(f"Loaded dataset: {len(df)} samples, {len(df.columns)} columns")
+        logger.info(f"Loaded {len(df)} feature rows from {dataset_path.name}")
 
-        exclude_cols = ['sample_id', 'row', 'col', 'flood_label']
+        # 2. Load event labels from shapefile
+        logger.info(f"Reading sample points shapefile: {samples_path}")
+        samples_gdf = gpd.read_file(samples_path)
+        samples_df = pd.DataFrame(samples_gdf.drop(columns='geometry'))
+        logger.info(f"Loaded {len(samples_df)} rows from shapefile")
+
+        # 3. Merge by sample_id (unique key). Fall back to (row,col) only if sample_id is missing.
+        if 'event' not in df.columns:
+            if 'sample_id' in df.columns and 'sample_id' in samples_df.columns:
+                df = df.merge(samples_df[['sample_id', 'event']], on='sample_id', how='left')
+                logger.info("Merged on sample_id")
+            else:
+                # Deduplicate on (row, col) to avoid cartesian product
+                dedup = samples_df.drop_duplicates(subset=['row', 'col'], keep='first')
+                df = df.merge(dedup[['row', 'col', 'event']], on=['row', 'col'], how='left')
+                logger.warning("Fell back to (row,col) merge with deduplication")
+
+        logger.info(f"After merge: {len(df)} rows, {df['event'].notna().sum()} matched to an event")
+
+        # 4. Filter by category
+        if self.category != "overall":
+            df = df[df['event'] == self.category].reset_index(drop=True)
+
+        logger.info(f"Loaded {len(df)} samples for category '{self.category}'")
+
+        if len(df) < 20:
+            raise ValueError(f"Not enough samples ({len(df)}) to train '{self.category}'")
+
+        # 5. Extract features and labels
+        exclude_cols = ['sample_id', 'row', 'col', 'flood_label', 'event']
         feature_cols = [col for col in df.columns if col not in exclude_cols]
 
         self.feature_names = feature_cols
@@ -105,8 +138,10 @@ class ModelTrainingPipeline:
         self.y = df['flood_label'].values
         self.coords = df[['row', 'col']].values
 
-        logger.info(f"Loaded dataset with {len(self.feature_names)} features")
+        if len(np.unique(self.y)) < 2:
+            raise ValueError(f"Only one class in '{self.category}' — cannot train")
 
+        # 6. Train/test split
         self.X_train, self.X_test, self.y_train, self.y_test, \
         self.coords_train, self.coords_test = train_test_split(
             self.X, self.y, self.coords,
@@ -115,32 +150,25 @@ class ModelTrainingPipeline:
             stratify=self.y
         )
 
-        logger.info(f"Train set: {len(self.X_train)} samples")
-        logger.info(f"Test set: {len(self.X_test)} samples")
+        logger.info(f"Train set: {len(self.X_train)} samples | Test set: {len(self.X_test)} samples")
 
+        
     # =========================================================================
     # SVM — full feature set
     # =========================================================================
     def train_svm(self):
         """Train SVM on the full engineered feature set."""
-        logger.info("\n" + "=" * 60)
-        logger.info("Training SVM Model (full engineered feature set)")
-        logger.info("=" * 60)
-
+        logger.info(f"\nTraining SVM Model for {self.category}")
         try:
-            X_train = self.X_train
-            X_test = self.X_test
-            logger.info(f"Using features: {X_train.shape}")
-
             svm = SVMModel()
-            svm.fit(X_train, self.y_train, tune_hyperparams=True)
+            svm.fit(self.X_train, self.y_train, tune_hyperparams=True)
 
-            y_train_proba = svm.predict_proba(X_train)
-            y_test_proba = svm.predict_proba(X_test)
+            y_train_proba = svm.predict_proba(self.X_train)
+            y_test_proba = svm.predict_proba(self.X_test)
             y_train_pred = y_train_proba[:, 1] if y_train_proba.shape[1] == 2 else y_train_proba[:, 0]
             y_test_pred = y_test_proba[:, 1] if y_test_proba.shape[1] == 2 else y_test_proba[:, 0]
-            y_train_class = svm.predict(X_train)
-            y_test_class = svm.predict(X_test)
+            y_train_class = svm.predict(self.X_train)
+            y_test_class = svm.predict(self.X_test)
 
             train_metrics = ModelEvaluator.evaluate(self.y_train, y_train_class, y_train_pred)
             test_metrics = ModelEvaluator.evaluate(self.y_test, y_test_class, y_test_pred)
@@ -155,10 +183,7 @@ class ModelTrainingPipeline:
                 'cv_results': {},
             }
 
-            logger.info(f"SVM Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"SVM Test - AUC: {test_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"SVM Best Params: {svm.best_params}")
-
+            logger.info(f"SVM Test AUC: {test_metrics.get('roc_auc', 0):.4f}")
             _save_model(svm, self.output_dir / "svm_model.pkl")
 
         except Exception as e:
@@ -171,24 +196,17 @@ class ModelTrainingPipeline:
     # =========================================================================
     def train_stacking(self):
         """Train Stacking Ensemble on the full engineered feature set."""
-        logger.info("\n" + "=" * 60)
-        logger.info("Training Stacking Ensemble (full engineered feature set)")
-        logger.info("=" * 60)
-
+        logger.info(f"\nTraining Stacking Ensemble for {self.category}")
         try:
-            X_train = self.X_train
-            X_test = self.X_test
-            logger.info(f"Using features: {X_train.shape}")
-
             stacking = StackingEnsemble(base_models=None)
-            stacking.fit(X_train, self.y_train)
+            stacking.fit(self.X_train, self.y_train)
 
-            y_train_proba = stacking.predict_proba(X_train)
-            y_test_proba = stacking.predict_proba(X_test)
+            y_train_proba = stacking.predict_proba(self.X_train)
+            y_test_proba = stacking.predict_proba(self.X_test)
             y_train_pred = y_train_proba[:, 1] if y_train_proba.shape[1] == 2 else y_train_proba[:, 0]
             y_test_pred = y_test_proba[:, 1] if y_test_proba.shape[1] == 2 else y_test_proba[:, 0]
-            y_train_class = stacking.predict(X_train)
-            y_test_class = stacking.predict(X_test)
+            y_train_class = stacking.predict(self.X_train)
+            y_test_class = stacking.predict(self.X_test)
 
             train_metrics = ModelEvaluator.evaluate(self.y_train, y_train_class, y_train_pred)
             test_metrics = ModelEvaluator.evaluate(self.y_test, y_test_class, y_test_pred)
@@ -202,9 +220,7 @@ class ModelTrainingPipeline:
                 'cv_results': self.cv_results.get('stacking', {}),
             }
 
-            logger.info(f"Stacking Training - AUC: {train_metrics.get('roc_auc', 0):.4f}")
-            logger.info(f"Stacking Test - AUC: {test_metrics.get('roc_auc', 0):.4f}")
-
+            logger.info(f"Stacking Test AUC: {test_metrics.get('roc_auc', 0):.4f}")
             _save_model(stacking, self.output_dir / "stacking_model.pkl")
 
         except Exception as e:
@@ -219,52 +235,24 @@ class ModelTrainingPipeline:
         return np.digitize(probabilities, self.risk_bins[1:], right=True)
 
     def generate_risk_maps(self):
-        logger.info("\n" + "=" * 60)
-        logger.info("Generating 4-Class Risk Maps (Equal Thresholds)")
-        logger.info("=" * 60)
-        logger.info(f"Risk Classes: {self.risk_classes}")
-        logger.info(f"Thresholds: {self.risk_bins}")
-
+        logger.info(f"\nGenerating 4-Class Risk Maps for {self.category}")
+        
         if 'stacking' in self.models:
             best_model = self.models['stacking']
-            logger.info("Using Stacking Ensemble for risk classification")
         elif 'svm' in self.models:
             best_model = self.models['svm']
-            logger.info("Using SVM for risk classification")
         else:
             logger.warning("No model available for risk classification")
             return
 
-        X_test = self.X_test
-        logger.info(f"Using X_test with shape: {X_test.shape}")
-
-        if X_test is None or len(X_test) == 0:
-            logger.warning("No test data available for risk classification")
-            return
-
         try:
-            y_proba = best_model.predict_proba(X_test)
-            if isinstance(y_proba, (list, tuple)):
-                y_proba = np.array(y_proba)
-
-            if hasattr(y_proba, 'ndim'):
-                if y_proba.ndim == 1:
-                    y_proba = np.array(y_proba).flatten()
-                elif y_proba.ndim == 2:
-                    if y_proba.shape[1] == 2:
-                        y_proba = y_proba[:, 1]
-                    elif y_proba.shape[1] > 2:
-                        y_proba = y_proba[:, 1]
-                    else:
-                        y_proba = y_proba.flatten()
-                else:
-                    y_proba = np.array(y_proba).flatten()
+            y_proba = best_model.predict_proba(self.X_test)
+            if y_proba.ndim == 2:
+                y_proba = y_proba[:, 1]
             else:
-                y_proba = np.array(y_proba).flatten()
-
-        except (AttributeError, NotImplementedError, TypeError) as e:
-            logger.warning(f"predict_proba failed: {e}, using predict")
-            y_proba = np.array(best_model.predict(X_test)).flatten()
+                y_proba = y_proba.flatten()
+        except Exception:
+            y_proba = np.array(best_model.predict(self.X_test)).flatten()
 
         y_proba = np.clip(y_proba, 0, 1)
         risk_classes = self.classify_risk(y_proba)
@@ -275,18 +263,11 @@ class ModelTrainingPipeline:
             'probability': y_proba,
             'risk_class_number': risk_classes,
             'risk_class_label': risk_labels,
+            'actual_label': self.y_test,
         })
-        risk_df['actual_label'] = self.y_test
-
         risk_df.to_csv(self.output_dir / "risk_classification.csv", index=False)
 
         class_counts = risk_df['risk_class_label'].value_counts()
-        logger.info("Risk Class Distribution (Test Set):")
-        for cls in self.risk_classes:
-            count = class_counts.get(cls, 0)
-            pct = count / len(risk_df) * 100 if len(risk_df) > 0 else 0
-            logger.info(f"  {cls}: {count} ({pct:.1f}%)")
-
         with open(self.output_dir / "risk_class_mapping.json", 'w') as f:
             json.dump({
                 'classes': self.risk_classes,
@@ -300,25 +281,16 @@ class ModelTrainingPipeline:
                 },
             }, f, indent=2)
 
-        logger.info("Risk classification complete!")
-
     # =========================================================================
     # SAVE / REPORT
     # =========================================================================
     def save_results(self):
-        logger.info("\n" + "=" * 60)
-        logger.info("Saving Results")
-        logger.info("=" * 60)
-
         with open(self.output_dir / "metrics.json", 'w') as f:
             json.dump(self.metrics, f, indent=2, default=str)
 
-        with open(self.output_dir / "cv_results.json", 'w') as f:
-            json.dump(self.cv_results, f, indent=2, default=str)
-
         comparison = []
         for model_name, metrics in self.metrics.items():
-            if 'test' in metrics and metrics['test'] is not None:
+            if 'test' in metrics:
                 comparison.append({
                     'model': model_name,
                     'accuracy': metrics['test'].get('accuracy', 0),
@@ -328,48 +300,13 @@ class ModelTrainingPipeline:
                     'roc_auc': metrics['test'].get('roc_auc', 0),
                     'kappa': metrics['test'].get('kappa', 0),
                 })
-            elif 'train' in metrics:
-                comparison.append({
-                    'model': model_name,
-                    'accuracy': metrics['train'].get('accuracy', 0),
-                    'precision': metrics['train'].get('precision', 0),
-                    'recall': metrics['train'].get('recall', 0),
-                    'f1': metrics['train'].get('f1', 0),
-                    'roc_auc': metrics['train'].get('roc_auc', 0),
-                    'kappa': metrics['train'].get('kappa', 0),
-                })
 
-        comparison_df = pd.DataFrame(comparison)
-        comparison_df.to_csv(self.output_dir / "model_comparison.csv", index=False)
-
-        summary_data = []
-        for model_name, metrics in self.metrics.items():
-            if 'summary' in metrics:
-                row = {'model': model_name}
-                for k, v in metrics['summary'].items():
-                    if isinstance(v, (int, float)):
-                        row[k] = v
-                summary_data.append(row)
-
-        if summary_data:
-            summary_df = pd.DataFrame(summary_data)
-            summary_df.to_csv(self.output_dir / "model_summary.csv", index=False)
-
-        logger.info(f"Results saved to {self.output_dir}")
+        pd.DataFrame(comparison).to_csv(self.output_dir / "model_comparison.csv", index=False)
 
     def generate_report(self):
-        logger.info("\n" + "=" * 60)
-        logger.info("Generating Visualization Report")
-        logger.info("=" * 60)
-
         try:
             fig = plt.figure(figsize=(16, 10))
-            gs = gridspec.GridSpec(
-                2, 3, figure=fig,
-                hspace=0.50, wspace=0.30,
-                left=0.06, right=0.97, top=0.94, bottom=0.08,
-            )
-
+            gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.50, wspace=0.30, left=0.06, right=0.97, top=0.94, bottom=0.08)
             ax_metrics = fig.add_subplot(gs[0, 0])
             ax_roc = fig.add_subplot(gs[0, 1])
             ax_risk = fig.add_subplot(gs[0, 2])
@@ -378,22 +315,15 @@ class ModelTrainingPipeline:
             comparison_df = pd.read_csv(self.output_dir / "model_comparison.csv")
 
             if len(comparison_df) > 0:
-                metrics_plot = comparison_df.melt(
-                    id_vars=['model'],
-                    value_vars=['accuracy', 'precision', 'recall', 'f1', 'roc_auc'],
-                )
-                sns.barplot(
-                    data=metrics_plot, x='model', y='value',
-                    hue='variable', ax=ax_metrics,
-                )
-                ax_metrics.set_title('Model Performance Comparison', fontsize=13)
+                metrics_plot = comparison_df.melt(id_vars=['model'], value_vars=['accuracy', 'precision', 'recall', 'f1', 'roc_auc'])
+                sns.barplot(data=metrics_plot, x='model', y='value', hue='variable', ax=ax_metrics)
+                ax_metrics.set_title(f'Model Performance ({self.category})', fontsize=13)
                 ax_metrics.set_ylabel('Score')
                 ax_metrics.set_xlabel('')
                 ax_metrics.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
                 ax_metrics.set_ylim(0, 1)
 
-            roc_values = comparison_df[['model', 'roc_auc']].dropna()
-            if len(roc_values) > 0:
+                roc_values = comparison_df[['model', 'roc_auc']].dropna()
                 sns.barplot(data=roc_values, x='model', y='roc_auc', ax=ax_roc)
                 ax_roc.set_title('ROC AUC by Model', fontsize=13)
                 ax_roc.set_ylabel('AUC Score')
@@ -405,37 +335,24 @@ class ModelTrainingPipeline:
             try:
                 risk_df = pd.read_csv(self.output_dir / "risk_classification.csv")
                 risk_counts = risk_df['risk_class_label'].value_counts()
-                if len(risk_counts) > 0:
-                    counts_dict = risk_counts.to_dict()
-                    counts = [counts_dict.get(cls, 0) for cls in self.risk_classes]
-                    colors = ['green', 'yellow', 'orange', 'red']
-                    bars = ax_risk.bar(self.risk_classes, counts, color=colors)
-                    ax_risk.set_title('4-Class Risk Distribution (Test Set)', fontsize=13)
-                    ax_risk.set_xlabel('Risk Class')
-                    ax_risk.set_ylabel('Count')
-                    ax_risk.tick_params(axis='x', rotation=45)
-                    for bar, count in zip(bars, counts):
-                        if count > 0:
-                            ax_risk.text(
-                                bar.get_x() + bar.get_width() / 2,
-                                bar.get_height() + 1,
-                                str(count), ha='center', va='bottom',
-                            )
+                counts_dict = risk_counts.to_dict()
+                counts = [counts_dict.get(cls, 0) for cls in self.risk_classes]
+                colors = ['green', 'yellow', 'orange', 'red']
+                bars = ax_risk.bar(self.risk_classes, counts, color=colors)
+                ax_risk.set_title('4-Class Risk Distribution', fontsize=13)
+                ax_risk.set_xlabel('Risk Class')
+                ax_risk.set_ylabel('Count')
+                ax_risk.tick_params(axis='x', rotation=45)
+                for bar, count in zip(bars, counts):
+                    if count > 0:
+                        ax_risk.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, str(count), ha='center', va='bottom')
             except Exception:
-                ax_risk.text(
-                    0.5, 0.5, 'Risk classification data not available',
-                    ha='center', va='center', transform=ax_risk.transAxes,
-                )
+                pass
 
             ax_table.axis('off')
             if len(comparison_df) > 0:
                 table_data = comparison_df.round(4).values
-                table = ax_table.table(
-                    cellText=table_data,
-                    colLabels=comparison_df.columns,
-                    loc='center',
-                    cellLoc='center',
-                )
+                table = ax_table.table(cellText=table_data, colLabels=comparison_df.columns, loc='center', cellLoc='center')
                 table.auto_set_font_size(False)
                 table.set_fontsize(12)
                 table.scale(1.0, 2.2)
@@ -443,191 +360,92 @@ class ModelTrainingPipeline:
 
             plt.savefig(self.output_dir / "model_report.png", dpi=150, bbox_inches='tight')
             plt.close()
-
-            logger.info(f"Report saved to {self.output_dir}/model_report.png")
-
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
-            import traceback
-            traceback.print_exc()
 
     def _grade_auc(self, auc: Optional[float]) -> str:
-        if auc is None:
-            return "not available"
-        if auc >= 0.9:
-            return "excellent"
-        if auc >= 0.8:
-            return "good"
-        if auc >= 0.7:
-            return "fair"
-        if auc >= 0.6:
-            return "weak"
-        return "poor (close to random guessing)"
+        if auc is None: return "not available"
+        if auc >= 0.9: return "excellent"
+        if auc >= 0.8: return "good"
+        if auc >= 0.7: return "fair"
+        if auc >= 0.6: return "weak"
+        return "poor"
 
     def generate_summary_report(self):
-        logger.info("\n" + "=" * 60)
-        logger.info("Generating Plain-Language Summary Report")
-        logger.info("=" * 60)
-
         try:
-            lines = []
-            lines.append("# Flood Susceptibility Model Report\n")
-            lines.append(
-                "This report summarizes how each model performed at predicting "
-                "flood susceptibility, in plain language. Technical terms are kept "
-                "so the results can be cross-checked against the raw metrics.\n"
-            )
-
-            lines.append("## Model Comparison\n")
+            lines = [f"# Flood Susceptibility Model Report - {self.category.upper()}\n"]
             lines.append("| Model | Test AUC | Rating | Test Accuracy | Test F1 |")
             lines.append("|---|---|---|---|---|")
 
-            # Only iterate over the models we trained
-            model_order = ['svm', 'stacking']
-            for name in model_order:
-                if name not in self.metrics:
-                    continue
+            for name in ['svm', 'stacking']:
+                if name not in self.metrics: continue
                 m = self.metrics[name]
-                test = m.get('test') or m.get('train') or {}
-                auc = test.get('roc_auc')
-                acc = test.get('accuracy')
-                f1 = test.get('f1')
-                grade = self._grade_auc(auc)
-                auc_str = f"{auc:.3f}" if auc is not None else "N/A"
-                acc_str = f"{acc:.3f}" if acc is not None else "N/A"
-                f1_str = f"{f1:.3f}" if f1 is not None else "N/A"
-                lines.append(f"| {name.upper()} | {auc_str} | {grade} | {acc_str} | {f1_str} |")
-
-            lines.append(
-                "\n*AUC (Area Under the ROC Curve) measures how well a model tells "
-                "flood-prone areas apart from non-flood-prone areas. 0.5 is random "
-                "guessing, 1.0 is a perfect score.*\n"
-            )
-
-            lines.append("## What Each Model Does\n")
-            for name in model_order:
-                if name not in self.metrics:
-                    continue
-                m = self.metrics[name]
-                test = m.get('test') or m.get('train') or {}
+                test = m.get('test') or {}
                 auc = test.get('roc_auc')
                 grade = self._grade_auc(auc)
-                desc = self.model_descriptions.get(name, "")
-
-                lines.append(f"### {name.upper()}")
-                lines.append(desc)
-                if auc is not None:
-                    lines.append(
-                        f"\nOn the test set, {name.upper()} scored an AUC of "
-                        f"{auc:.3f}, which is considered **{grade}** for telling "
-                        f"flood-prone from non-flood-prone areas."
-                    )
-                r2 = m.get('summary', {}).get('r2')
-                if r2 is not None:
-                    lines.append(
-                        f" Its R² (how much of the variation in flood risk it "
-                        f"explains) was {r2:.3f}."
-                    )
-                fallback = m.get('summary', {}).get('fallback_used')
-                if fallback:
-                    lines.append(
-                        f" *Note: this run used the {fallback} fallback because "
-                        f"the primary spatial-regression fit did not converge.*"
-                    )
-                lines.append("")
+                lines.append(f"| {name.upper()} | {auc:.3f} | {grade} | {test.get('accuracy', 0):.3f} | {test.get('f1', 0):.3f} |")
 
             risk_path = self.output_dir / "risk_classification.csv"
             if risk_path.exists():
                 risk_df = pd.read_csv(risk_path)
                 counts = risk_df['risk_class_label'].value_counts()
                 total = len(risk_df)
-                lines.append("## Flood Risk Classification (Test Areas)\n")
-                lines.append(
-                    "Each test location was sorted into one of 4 risk classes "
-                    "with equal thresholds (25% intervals):\n\n"
-                    "- **Low Risk**: 0-25% probability\n"
-                    "- **Medium Risk**: 25-50% probability\n"
-                    "- **High Risk**: 50-75% probability\n"
-                    "- **Very High Risk**: 75-100% probability\n\n"
-                    "Distribution of test areas:\n"
-                )
+                lines.append("\n## Flood Risk Classification\n")
                 for cls in self.risk_classes:
                     count = int(counts.get(cls, 0))
                     pct = (count / total * 100) if total else 0
-                    lines.append(f"- **{cls}**: {count} areas ({pct:.1f}% of the test set)")
-                lines.append("")
+                    lines.append(f"- **{cls}**: {count} areas ({pct:.1f}%)")
 
-            if self.cv_results:
-                lines.append("## Cross-Validation Reliability Check\n")
-                lines.append(
-                    "Cross-validation re-trains each model on different subsets of "
-                    "the data to check that its performance is consistent and not "
-                    "a fluke of one particular train/test split.\n"
-                )
-                for name, results in self.cv_results.items():
-                    if (
-                        isinstance(results, dict)
-                        and 'mean' in results
-                        and 'roc_auc' in results['mean']
-                    ):
-                        mean_auc = results['mean']['roc_auc']
-                        std_auc = results['std']['roc_auc']
-                        stability = "stable" if std_auc < 0.03 else "somewhat variable"
-                        lines.append(
-                            f"- **{name.upper()}**: average AUC {mean_auc:.3f} "
-                            f"(± {std_auc:.3f} across folds) — {stability} across folds."
-                        )
-                lines.append("")
-
-            best_name, best_auc = None, -1.0
-            for name in model_order:
-                if name not in self.metrics:
-                    continue
-                test = self.metrics[name].get('test') or self.metrics[name].get('train') or {}
-                auc = test.get('roc_auc')
-                if auc is not None and auc > best_auc:
-                    best_name, best_auc = name, auc
-
-            if best_name:
-                lines.append("## Bottom Line\n")
-                lines.append(
-                    f"Based on test-set AUC, **{best_name.upper()}** performed best "
-                    f"(AUC = {best_auc:.3f}) and is the most reliable model here for "
-                    f"producing the final flood susceptibility map."
-                )
-
-            report_text = "\n".join(lines)
             with open(self.output_dir / "model_report_summary.md", "w") as f:
-                f.write(report_text)
-
-            logger.info(f"Summary report saved to {self.output_dir}/model_report_summary.md")
-
+                f.write("\n".join(lines))
         except Exception as e:
             logger.error(f"Summary report generation failed: {e}")
-            import traceback
-            traceback.print_exc()
 
-    def train_all(self, enable_mgwr: bool = True): # kept param for compatibility
+    def train_all(self):
         self.load_data()
-
-        # Only train the 2 models needed for Azure
-        self.train_svm()       
-        self.train_stacking()  
-
+        self.train_svm()
+        self.train_stacking()
         self.generate_risk_maps()
         self.save_results()
         self.generate_report()
         self.generate_summary_report()
-
         return self.metrics
-    
+
 
 def main():
-    import sys
-    # The --no-mgwr flag is no longer strictly needed but kept for compatibility
-    enable_mgwr = "--no-mgwr" not in sys.argv 
-    pipeline = ModelTrainingPipeline()
-    pipeline.train_all(enable_mgwr=enable_mgwr)
+    sample_dir = Path("./outputs/phase2/sample_points")
+    samples_path = sample_dir / "sample_points.shp"
+
+    if not samples_path.exists():
+        logger.error("Master sample points shapefile not found. Run Phase 2 first.")
+        return
+
+    # Read the master .shp to find all unique events dynamically
+    logger.info("Reading master shapefile to extract unique events...")
+    samples_gdf = gpd.read_file(samples_path)
+    
+    if 'event' not in samples_gdf.columns:
+        logger.error("No 'event' column found in sample_points.shp.")
+        return
+        
+    unique_events = samples_gdf['event'].dropna().unique().tolist()
+
+    # Ensure 'overall' is first in the list
+    categories = ["overall"] + sorted(unique_events)
+
+    logger.info(f"Found {len(categories)} categories to train: {categories}")
+
+    for category in categories:
+        logger.info(f"\n{'='*60}\nStarting training for category: {category}\n{'='*60}")
+        try:
+            pipeline = ModelTrainingPipeline(category)
+            pipeline.train_all()
+        except Exception as e:
+            logger.error(f"Training failed for {category}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    logger.info("\nAll training pipelines completed.")
 
 
 if __name__ == "__main__":

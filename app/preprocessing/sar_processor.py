@@ -14,7 +14,6 @@ from scipy.ndimage import distance_transform_edt
 from sklearn.cluster import KMeans
 from .config import SAR_REGISTERED
 
-
 logger = logging.getLogger(__name__)
 
 class SARProcessor:
@@ -34,7 +33,7 @@ class SARProcessor:
         """Load preprocessed SAR data from the registered_sar directory"""
         logger.info("Loading preprocessed SAR data from your preprocess outputs...")
         
-        # Dynamically get all registered events from config
+        # Dynamically get all registered events from config (includes dynamic uploads)
         events = list(SAR_REGISTERED.keys())
         sar_data = {}
         
@@ -118,7 +117,7 @@ class SARProcessor:
         logger.info(f"Combined flood inventory: {total_flood:,} flood pixels ({total_flood/total_pixels*100:.2f}%)")
         
         return flood_inventory
-    
+
     def _get_flood_boundary_pixels(self, flood_map: np.ndarray, buffer_size: int = 5) -> np.ndarray:
         """Get pixels near flood boundaries (transition zones)"""
         distance = distance_transform_edt(flood_map == 0)
@@ -406,32 +405,9 @@ class SARProcessor:
             non_flood_points = np.array([]).reshape(0, 2)
             non_flood_events = np.array([], dtype=object)
 
-        if len(flood_points) < n_flood:
-            logger.warning(f"Only {len(flood_points)} flood points available, adjusting")
-            n_flood_actual = len(flood_points)
-            n_non_flood_actual = n_non_flood + (n_flood - n_flood_actual)
-        else:
-            n_flood_actual = n_flood
-
-        if len(non_flood_points) < n_non_flood:
-            logger.warning(f"Only {len(non_flood_points)} non-flood points available, adjusting")
-            n_non_flood_actual = len(non_flood_points)
-        else:
-            n_non_flood_actual = n_non_flood
-
-        if len(flood_points) > n_flood_actual:
-            indices = np.random.choice(len(flood_points), n_flood_actual, replace=False)
-            final_flood = flood_points[indices]
-            final_flood_events = flood_events[indices]
-        else:
-            final_flood, final_flood_events = flood_points, flood_events
-
-        if len(non_flood_points) > n_non_flood_actual:
-            indices = np.random.choice(len(non_flood_points), n_non_flood_actual, replace=False)
-            final_non_flood = non_flood_points[indices]
-            final_non_flood_events = non_flood_events[indices]
-        else:
-            final_non_flood, final_non_flood_events = non_flood_points, non_flood_events
+        # REMOVED DOWNSAMPLING BLOCK: Retain all collected samples from every event
+        final_flood, final_flood_events = flood_points, flood_events
+        final_non_flood, final_non_flood_events = non_flood_points, non_flood_events
 
         sample_points = np.vstack([final_flood, final_non_flood])
         sample_labels = np.concatenate([
@@ -465,7 +441,7 @@ class SARProcessor:
                            output_dir: Path = Path("./outputs/phase2"),
                            metadata: Dict = None,
                            sample_events: np.ndarray = None) -> gpd.GeoDataFrame:
-        """Save sample points (with event, x, y) as shapefile and CSV"""
+        """Save sample points as a master file and per-event files."""
         if sample_points is None:
             sample_points = self.sample_points
 
@@ -514,13 +490,29 @@ class SARProcessor:
 
         gdf = gpd.GeoDataFrame(data, crs=crs)
 
-        shp_path = sample_dir / "sample_points.shp"
-        gdf.to_file(shp_path)
-        logger.info(f"Saved sample points to {sample_dir}")
+        # 1. Save Master Files (All events combined)
+        master_shp = sample_dir / "sample_points.shp"
+        gdf.to_file(master_shp)
+        master_csv = sample_dir / "sample_points.csv"
+        gdf.drop(columns='geometry').to_csv(master_csv, index=False)
+        logger.info(f"Saved master sample points to {sample_dir}")
 
-        csv_path = sample_dir / "sample_points.csv"
-        gdf.drop(columns='geometry').to_csv(csv_path, index=False)
+        # 2. Save Per-Event Files
+        if sample_events is not None:
+            for event in np.unique(sample_events):
+                event_gdf = gdf[gdf['event'] == event]
+                if len(event_gdf) == 0:
+                    continue
+                
+                event_shp = sample_dir / f"{event}_sample_points.shp"
+                event_gdf.to_file(event_shp)
+                
+                event_csv = sample_dir / f"{event}_sample_points.csv"
+                event_gdf.drop(columns='geometry').to_csv(event_csv, index=False)
+                
+                logger.info(f"Saved {len(event_gdf):,} points for {event} to {sample_dir}")
 
+        # Save metadata
         metadata_clean = {}
         if metadata:
             for key, value in metadata.items():
@@ -553,6 +545,7 @@ class SARProcessor:
 
         return gdf
 
+    
 
         
     def get_sar_metadata(self) -> Dict:

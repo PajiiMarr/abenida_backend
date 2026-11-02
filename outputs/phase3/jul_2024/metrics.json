@@ -1,0 +1,123 @@
+{
+  "svm": {
+    "train": {
+      "accuracy": 0.8572613343162551,
+      "precision": 0.8755937350795392,
+      "recall": 0.8572613343162551,
+      "f1": 0.8598856641662378,
+      "kappa": 0.7047125768610782,
+      "roc_auc": 0.9218955548695282,
+      "rmse": 0.32349232871408984,
+      "mae": 0.23493640336263766
+    },
+    "test": {
+      "accuracy": 0.8131220051603391,
+      "precision": 0.8250423924943387,
+      "recall": 0.8131220051603391,
+      "f1": 0.8159088536391539,
+      "kappa": 0.6075337464694213,
+      "roc_auc": 0.882617868183123,
+      "rmse": 0.359198718798077,
+      "mae": 0.26113205334200745
+    },
+    "summary": {
+      "best_params": {
+        "C": 10,
+        "gamma": 0.1
+      },
+      "kernel": "rbf",
+      "calibrated": true,
+      "calibration_method": "sigmoid"
+    },
+    "best_params": {
+      "C": 10,
+      "gamma": 0.1
+    },
+    "feature_names": [
+      "dem",
+      "slope",
+      "aspect",
+      "twi",
+      "hand",
+      "flow_accumulation",
+      "distance_to_river",
+      "chirps",
+      "gpm",
+      "wetness_index",
+      "flood_concentration",
+      "twi_hand_ratio",
+      "northness",
+      "eastness",
+      "relative_elevation",
+      "slope_aspect",
+      "river_proximity",
+      "floodplain_index",
+      "rainfall_intensity",
+      "rainfall_ratio",
+      "rainfall_wetness",
+      "rainfall_flow",
+      "twi_hand",
+      "hand_squared",
+      "dem_river_ratio",
+      "hand_dem_ratio",
+      "flow_dist_ratio"
+    ],
+    "cv_results": {}
+  },
+  "stacking": {
+    "train": {
+      "accuracy": 0.9924437891632879,
+      "precision": 0.9925878752271818,
+      "recall": 0.9924437891632879,
+      "f1": 0.9924604391694914,
+      "kappa": 0.9835812609717925,
+      "roc_auc": 0.9999304025833375,
+      "rmse": 0.10280349049861577,
+      "mae": 0.06234143266758545
+    },
+    "test": {
+      "accuracy": 0.890527091780317,
+      "precision": 0.8998825614213942,
+      "recall": 0.890527091780317,
+      "f1": 0.8920907406849995,
+      "kappa": 0.7695776271866949,
+      "roc_auc": 0.9536477868799953,
+      "rmse": 0.2891090748070139,
+      "mae": 0.16386521963818582
+    },
+    "summary": {
+      "n_estimators": 3,
+      "meta_estimator": "LogisticRegression(class_weight='balanced', max_iter=1000)"
+    },
+    "feature_names": [
+      "dem",
+      "slope",
+      "aspect",
+      "twi",
+      "hand",
+      "flow_accumulation",
+      "distance_to_river",
+      "chirps",
+      "gpm",
+      "wetness_index",
+      "flood_concentration",
+      "twi_hand_ratio",
+      "northness",
+      "eastness",
+      "relative_elevation",
+      "slope_aspect",
+      "river_proximity",
+      "floodplain_index",
+      "rainfall_intensity",
+      "rainfall_ratio",
+      "rainfall_wetness",
+      "rainfall_flow",
+      "twi_hand",
+      "hand_squared",
+      "dem_river_ratio",
+      "hand_dem_ratio",
+      "flow_dist_ratio"
+    ],
+    "cv_results": {}
+  }
+}

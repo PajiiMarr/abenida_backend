@@ -44,7 +44,7 @@ COPY app ./app
 COPY register_sar_to_dem.py .
 COPY train_model.py .
 COPY retrain_new_event.py .
-COPY create_event_datasets.py .
+# COPY create_event_datasets.py .
 
 # Phase 3 pickles + metrics.
 COPY outputs/phase3 ./outputs/phase3

@@ -37,9 +37,14 @@ RUN pip install --upgrade pip setuptools wheel \
  && pip install -r requirements.txt
 
 # ---- App + artifacts --------------------------------------------------------
-# Copy the whole app tree; .dockerignore excludes training scripts and
-# heavy Phase 2 intermediates.
+# Copy the whole app tree
 COPY app ./app
+
+# Copy the root-level python scripts needed for the background retraining pipeline
+COPY register_sar_to_dem.py .
+COPY train_model.py .
+COPY retrain_new_event.py .
+COPY create_event_datasets.py .
 
 # Phase 3 pickles + metrics.
 COPY outputs/phase3 ./outputs/phase3

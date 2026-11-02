@@ -13,7 +13,7 @@ import secrets
 from datetime import datetime
 import subprocess
 import shutil
-import pickle  # Added for loading per-event models
+import pickle
 
 import geopandas as gpd
 import numpy as np
@@ -141,14 +141,14 @@ class PredictPointRequest(BaseModel):
     lat: float
     lng: float
     model: str = "stacking"
-    event: str = "overall" # Added event parameter
+    event: str = "overall"
     features: Optional[dict] = None
     explain: bool = True
 
 class PredictBatchRequest(BaseModel):
     points: List[dict]
     model: str = "stacking"
-    event: str = "overall" # Added event parameter
+    event: str = "overall"
     explain: bool = False
 
 class GenerateRasterRequest(BaseModel):
@@ -267,126 +267,46 @@ def _active_feature_set() -> str:
     except Exception:
         return "unknown"
 
-def _apply_scaler(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float64)
-    scaler = getattr(registry, "scaler", None)
-
-    if scaler is None:
-        return x.astype(np.float32)
-
-    if hasattr(scaler, "transform"):
-        return scaler.transform(x).astype(np.float32)
-
-    if isinstance(scaler, dict):
-        mean = scaler.get("mean", scaler.get("mu", scaler.get("center")))
-        scale = scaler.get("scale", scaler.get("sigma", scaler.get("std")))
-        if mean is not None and scale is not None:
-            mean = np.asarray(mean, dtype=np.float64)
-            scale = np.asarray(scale, dtype=np.float64)
-            scale = np.where(scale == 0, 1.0, scale)
-            return ((x - mean) / scale).astype(np.float32)
-
-        nested = scaler.get("scaler", None)
-        if nested is not None:
-            if hasattr(nested, "transform"):
-                return nested.transform(x).astype(np.float32)
-            if isinstance(nested, dict):
-                inner_mean = nested.get("mean", nested.get("mu", nested.get("center")))
-                inner_scale = nested.get("scale", nested.get("sigma", nested.get("std")))
-                if inner_mean is not None and inner_scale is not None:
-                    inner_mean = np.asarray(inner_mean, dtype=np.float64)
-                    inner_scale = np.asarray(inner_scale, dtype=np.float64)
-                    inner_scale = np.where(inner_scale == 0, 1.0, inner_scale)
-                    return ((x - inner_mean) / inner_scale).astype(np.float32)
-
-        raise RuntimeError(
-            f"registry.scaler is a dict but has no recognizable "
-            f"mean/scale keys and no usable nested 'scaler'. "
-            f"Actual keys: {sorted(scaler.keys())}"
-        )
-
-    raise RuntimeError(
-        f"Unrecognized registry.scaler type: {type(scaler).__name__}"
-    )
-
-# ---------- Spatial models ----------
-SPATIAL_MODELS = {"gwr", "mgwr"}
-SPATIAL_COLS = ["dem", "slope", "aspect", "twi", "hand",
-                "flow_accumulation", "distance_to_river", "chirps", "gpm"]
-_GRID: Dict[str, Any] = {}
-
-def _pixel_rowcol(lat: float, lng: float):
-    import pyproj
-    import rasterio
-    from rasterio.transform import rowcol
-    from app.preprocessing.config import TARGET_CRS
-
-    if not _GRID:
-        with rasterio.open(OUTPUT_DIR / "aligned/dem_aligned.tif") as src:
-            _GRID["transform"] = src.transform
-        _GRID["tf"] = pyproj.Transformer.from_crs(
-            "EPSG:4326", TARGET_CRS, always_xy=True
-        )
-    x, y = _GRID["tf"].transform(lng, lat)
-    r, c = rowcol(_GRID["transform"], x, y)
-    return float(r), float(c)
-
-class _SpatialAdapter:
-    def __init__(self, model, names, points):
-        self.model = model
-        self.idx = [names.index(f) for f in SPATIAL_COLS]
-        self.coords = np.array([_pixel_rowcol(la, ln) for la, ln in points])
-
-    def predict_proba(self, X):
-        X = np.atleast_2d(np.asarray(X, dtype=float))
-        if len(self.coords) == len(X):
-            coords = self.coords
-        elif len(self.coords) == 1:
-            coords = np.repeat(self.coords, len(X), axis=0)
-        else:
-            raise ValueError(
-                f"{len(X)} rows but {len(self.coords)} coordinates")
-        p = np.clip(self.model.predict_at(coords, X[:, self.idx]), 0.0, 1.0)
-        return np.column_stack([1.0 - p, p])
-
 # ---------- Feature attribution ----------
 _BASELINE: Optional[np.ndarray] = None
 
 def _baseline(names: List[str]) -> np.ndarray:
+    """Mean of the raw (unscaled) engineered training features."""
     global _BASELINE
     if _BASELINE is None or len(_BASELINE) != len(names):
         try:
-            df = pd.read_csv(OUTPUT_DIR / "full_dataset_engineered_standardized.csv")
+            # Use RAW dataset (models were trained on this, not the standardized one)
+            df = pd.read_csv(OUTPUT_DIR / "full_dataset_engineered.csv")
             _BASELINE = df[names].mean().to_numpy(dtype=np.float64)
         except Exception as e:
-            logger.warning(f"Could not compute attribution baseline ({e}); using 0.5")
-            _BASELINE = np.full(len(names), 0.5, dtype=np.float64)
+            logger.warning(f"Could not compute raw attribution baseline ({e}); using 0.0")
+            _BASELINE = np.zeros(len(names), dtype=np.float64)
     return _BASELINE
 
-def _predict_proba_single(model, x_scaled: np.ndarray) -> float:
+def _predict_proba_single(model, x: np.ndarray) -> float:
     if hasattr(model, "predict_proba"):
-        return float(model.predict_proba(x_scaled)[0, 1])
-    raw = np.asarray(model.predict(x_scaled)).ravel()
+        return float(model.predict_proba(x)[0, 1])
+    raw = np.asarray(model.predict(x)).ravel()
     return float(raw[0])
 
 def _feature_attributions(
     model,
-    x_scaled: np.ndarray,
+    x: np.ndarray,
     names: List[str],
     top_k: int = 5,
 ) -> List[Dict[str, Any]]:
-    x_scaled = np.asarray(x_scaled, dtype=np.float64)
-    if x_scaled.ndim == 1:
-        x_scaled = x_scaled.reshape(1, -1)
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim == 1:
+        x = x.reshape(1, -1)
 
     base = _baseline(names)
-    p_full = _predict_proba_single(model, x_scaled)
+    p_full = _predict_proba_single(model, x)
 
     contributions: List[Dict[str, Any]] = []
     for i, name in enumerate(names):
-        if i >= x_scaled.shape[1]:
+        if i >= x.shape[1]:
             break
-        x_ablated = x_scaled.copy()
+        x_ablated = x.copy()
         x_ablated[0, i] = base[i]
         try:
             p_ablated = _predict_proba_single(model, x_ablated)
@@ -411,8 +331,8 @@ def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_
     try:
         logger.info("Running register_sar_to_dem.py...")
         register_result = subprocess.run(
-            ["python", "register_sar_to_dem.py", 
-             "--event", event_name, 
+            ["python", "register_sar_to_dem.py",
+             "--event", event_name,
              "--flood", new_flood_map_path,
              "--diff", new_diff_db_path,
              "--ndfi", new_ndfi_path],
@@ -444,7 +364,7 @@ def run_retraining_pipeline(new_flood_map_path: str, new_diff_db_path: str, new_
             return
 
         logger.info(f"✅ Retraining pipeline completed successfully for {event_name}!")
-        
+
     except Exception as e:
         logger.error(f"Error during retraining: {str(e)}")
 
@@ -513,12 +433,12 @@ async def list_event_models():
         if category_dir.is_dir():
             event_name = category_dir.name
             models = []
-            
+
             if (category_dir / "svm_model.pkl").exists():
                 models.append("svm")
             if (category_dir / "stacking_model.pkl").exists():
                 models.append("stacking")
-            
+
             metrics = []
             metrics_path = category_dir / "model_comparison.csv"
             if metrics_path.exists():
@@ -603,10 +523,10 @@ async def upload_flood_event(
 ):
     if not supabase:
         raise HTTPException(500, "Supabase client not configured.")
-    
+
     try:
         safe_event_name = "".join([c if c.isalnum() else "_" for c in eventName]).strip("_").lower()
-        
+
         flood_map_bytes = await floodMap.read()
         diff_db_bytes = await diffDb.read()
         ndfi_bytes = await ndfi.read()
@@ -641,7 +561,7 @@ async def upload_flood_event(
 
         local_dir = Path(f"./data/incoming/{safe_event_name}")
         local_dir.mkdir(parents=True, exist_ok=True)
-        
+
         local_flood_map = local_dir / "flood_map.tif"
         local_diff_db = local_dir / "diff_db.tif"
         local_ndfi = local_dir / "ndfi.tif"
@@ -712,13 +632,9 @@ async def predict_point(req: PredictPointRequest):
         except Exception as e:
             raise HTTPException(422, f"Could not build feature vector at point: {e}")
 
+    # NOTE: No external scaling. The model (SVM/Stacking) has its own internal StandardScaler.
     try:
-        x_scaled = _apply_scaler(x)
-    except Exception as e:
-        raise HTTPException(500, f"Scaling failed: {e}")
-
-    try:
-        proba = _predict_proba_single(model, x_scaled)
+        proba = _predict_proba_single(model, x)
     except Exception as e:
         raise HTTPException(500, f"Prediction failed: {e}")
 
@@ -741,7 +657,7 @@ async def predict_point(req: PredictPointRequest):
     if req.explain:
         try:
             payload["top_factors"] = _feature_attributions(
-                model, x_scaled, names, top_k=5,
+                model, x, names, top_k=5,
             )
         except Exception as e:
             logger.warning(f"Feature attribution failed: {e}")
@@ -792,16 +708,12 @@ async def predict_batch(req: PredictBatchRequest):
     if rows:
         X = np.vstack(rows)
 
-        try:
-            X_scaled = _apply_scaler(X)
-        except Exception as e:
-            raise HTTPException(500, f"Scaling failed: {e}")
-
+        # NOTE: No external scaling. The model has its own internal StandardScaler.
         try:
             if hasattr(model, "predict_proba"):
-                probas = model.predict_proba(X_scaled)[:, 1]
+                probas = model.predict_proba(X)[:, 1]
             else:
-                probas = np.asarray(model.predict(X_scaled)).ravel()
+                probas = np.asarray(model.predict(X)).ravel()
         except Exception as e:
             raise HTTPException(500, f"Prediction failed: {e}")
 
@@ -828,7 +740,7 @@ async def predict_batch(req: PredictBatchRequest):
             try:
                 entry["top_factors"] = _feature_attributions(
                     model,
-                    X_scaled[local_i:local_i + 1],
+                    X[local_i:local_i + 1],
                     names,
                     top_k=5,
                 )
@@ -866,14 +778,6 @@ async def generate_susceptibility(req: GenerateRasterRequest):
     model = registry.get(req.model)
     if model is None:
         raise HTTPException(404, f"Model '{req.model}' not loaded")
-
-    if req.model in SPATIAL_MODELS:
-        raise HTTPException(
-            501,
-            f"Raster generation for '{req.model}' is not supported yet: "
-            f"predict_full_raster does not pass pixel coordinates, so it "
-            f"would produce a constant map. Use stacking, svm or mars.",
-        )
 
     try:
         raster, meta = predict_full_raster(
@@ -979,12 +883,13 @@ async def health_check():
         "models_ready": bool(getattr(registry, "is_ready", False)),
     }
 
-@app.get("/api/raster/{model}")
-async def get_raster(model: str):
-    path = PHASE3_DIR / f"susceptibility_{model}.tif"
+@app.get("/api/raster/{event}/{model}")
+async def get_raster(event: str, model: str):
+    path = PHASE3_DIR / event / f"susceptibility_{model}.tif"
     if not path.exists():
-        raise HTTPException(404, "Raster not generated yet")
+        raise HTTPException(404, f"Raster for {event}/{model} not generated yet")
     return FileResponse(path, media_type="image/tiff")
+
 
 class RasterScalerWrapper:
     def __init__(self, scaler_dict):

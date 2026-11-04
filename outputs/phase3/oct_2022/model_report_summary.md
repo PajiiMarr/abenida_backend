@@ -2,12 +2,12 @@
 
 | Model | Test AUC | Rating | Test Accuracy | Test F1 |
 |---|---|---|---|---|
-| SVM | 0.843 | good | 0.763 | 0.766 |
-| STACKING | 0.942 | excellent | 0.864 | 0.865 |
+| SVM | 0.851 | good | 0.773 | 0.773 |
+| STACKING | 0.939 | excellent | 0.874 | 0.875 |
 
 ## Flood Risk Classification
 
-- **Low Risk**: 1370 areas (45.8%)
-- **Medium Risk**: 261 areas (8.7%)
-- **High Risk**: 299 areas (10.0%)
-- **Very High Risk**: 1063 areas (35.5%)
+- **Low Risk**: 1427 areas (47.8%)
+- **Medium Risk**: 228 areas (7.6%)
+- **High Risk**: 241 areas (8.1%)
+- **Very High Risk**: 1092 areas (36.5%)

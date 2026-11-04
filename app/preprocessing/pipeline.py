@@ -166,11 +166,16 @@ class PreprocessingPipeline:
 
         logger.info(f"Sampling from config: {flood_points} flood + {non_flood_points} "
                     f"non-flood = {total_samples} total (ratio={flood_ratio:.2f})")
-        
+                
         self.sample_points, self.sample_labels = processor.create_sample_points(
             n_samples=total_samples,
             flood_ratio=flood_ratio,
-            sampling_method='stratified'  # Best for spatial coverage
+            sampling_method='stratified',
+            barangay_path=Path("./data/boundaries/zamboanga_city_barangays.geojson"),
+            barangay_name_field="adm4_name",
+            focus_fraction=0.8,
+            auto_include_frac=0.05,
+            auto_include_min_px=200,
         )
         
         # Store coordinates for all points

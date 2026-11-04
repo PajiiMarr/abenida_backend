@@ -1,5 +1,5 @@
 {
-  "total_samples": 43702,
+  "total_samples": 43713,
   "n_features": 27,
   "n_raw_features": 9,
   "n_engineered_features": 18,
@@ -32,7 +32,7 @@
     "hand_dem_ratio",
     "flow_dist_ratio"
   ],
-  "flood_samples": 17263,
-  "non_flood_samples": 26439,
-  "flood_percentage": 39.50162463960459
+  "flood_samples": 16674,
+  "non_flood_samples": 27039,
+  "flood_percentage": 38.144259144876806
 }

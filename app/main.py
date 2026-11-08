@@ -150,6 +150,7 @@ class PredictBatchRequest(BaseModel):
     model: str = "stacking"
     event: str = "overall"
     explain: bool = False
+    simulation_override: Optional[Dict[str, float]] = None  # <-- NEW
 
 class GenerateRasterRequest(BaseModel):
     model: str = "stacking"
@@ -691,6 +692,14 @@ async def predict_batch(req: PredictBatchRequest):
     for i, p in enumerate(req.points):
         try:
             raw = sample_raw_features(p["lat"], p["lng"])
+
+            # --- APPLY SIMULATION OVERRIDE ---
+            if req.simulation_override:
+                for key, delta in req.simulation_override.items():
+                    if key in raw and raw[key] is not None:
+                        raw[key] += delta
+            # ---------------------------------
+
             kind, note = _domain_check(raw)
             if kind is not None:
                 special[i] = _special_payload(kind, note)

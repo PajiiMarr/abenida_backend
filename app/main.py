@@ -67,10 +67,15 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://fsizc.vercel.app",
+        "http://localhost:5173",
+    ],
     allow_credentials=False,
+    allow_origin_regex=r"https://fsizc-.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Risk-Breaks"],  # your raster code reads this header
 )
 
 # ---------- API key auth ----------
@@ -890,7 +895,12 @@ async def get_raster(event: str, model: str):
     path = PHASE3_DIR / event / f"susceptibility_{model_id}.tif"
     if not path.exists():
         raise HTTPException(404, f"Raster for {event}/{model_id} not generated yet")
-    return FileResponse(path, media_type="image/tiff")
+    breaks = _load_breaks(event, model_id)
+    return FileResponse(
+        path,
+        media_type="image/tiff",
+        headers={"X-Risk-Breaks": ",".join(f"{b:.6f}" for b in breaks)},
+    )
 
 
 if __name__ == "__main__":

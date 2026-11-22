@@ -1,22 +1,3 @@
-"""
-Train the full model suite (m1–m5) per category.
-
-Categories: oct_2022, jan_2023, jul_2024, overall
-            + holdout_<event> (train on the other events, test on <event>)
-Split     : spatial-block hold-out (whole blocks to train OR test)
-Models   : m1_gwpca_svm, m2_gwr_mgwr, m3_gwpca_mars,
-           m4_stacking_all, m5_gwr_mars_svm_pipeline
-Outputs  : outputs/phase3/<category>/{<model>.pkl, <model>_summary.json}
-           outputs/phase3/suite_model_comparison.csv
-           outputs/phase3/model_performance_summary.txt
-           outputs/phase3/suite_features.json (feature order the API must use)
-
-Retraining for a newly uploaded event (set by the API):
-SUITE_NEW_EVENT=<event>   -> trains <event>, overall and every holdout_<event>
-  SUITE_CATEGORIES=a,b,c    -> trains exactly these categories
-Results for untouched categories are kept in the comparison CSV.
-"""
-
 
 import matplotlib
 matplotlib.use("Agg")
@@ -40,14 +21,9 @@ from app.training.models import train_model_suite, MODEL_CLASSES, EVENT_KEYS
 
 logger = logging.getLogger(__name__)
 
-# ---- validation settings ----------------------------------------------------
 SPLIT = "spatial"             # "spatial" (block hold-out) or "random"
 TEMPORAL_HOLDOUT = True       # add leave-one-event-out categories (holdout_<event>)
-# Categories to train; None = everything. Options: oct_2022, jan_2023, jul_2024,
-# overall, holdout_oct_2022, holdout_jan_2023, holdout_jul_2024
 RUN_CATEGORIES = None
-# rainfall_mm is a per-event constant (158.3 / 182.7 / 170.2), i.e. an event ID:
-# it leaks identity in 'overall' and breaks leave-one-event-out. Excluded here.
 EXCLUDE_FEATURES = {"rainfall_mm"}
 
 OUT_DIR = Path("outputs/phase3")

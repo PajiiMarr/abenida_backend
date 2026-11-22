@@ -1,4 +1,5 @@
 {
+  "model_used": "stacking",
   "classes": [
     "Low Risk",
     "Medium Risk",
@@ -13,10 +14,10 @@
     1.0
   ],
   "distribution": {
-    "Low Risk": 1449,
-    "Very High Risk": 890,
-    "High Risk": 215,
-    "Medium Risk": 177
+    "Low Risk": 1484,
+    "Very High Risk": 902,
+    "High Risk": 192,
+    "Medium Risk": 173
   },
   "thresholds": {
     "Low Risk": [

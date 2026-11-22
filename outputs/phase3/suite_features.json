@@ -1,0 +1,36 @@
+{
+  "features": [
+    "dem",
+    "slope",
+    "aspect",
+    "twi",
+    "hand",
+    "flow_accumulation",
+    "distance_to_river",
+    "chirps",
+    "gpm",
+    "population_density",
+    "wetness_index",
+    "flood_concentration",
+    "twi_hand_ratio",
+    "northness",
+    "eastness",
+    "relative_elevation",
+    "slope_aspect",
+    "river_proximity",
+    "floodplain_index",
+    "rainfall_intensity",
+    "rainfall_ratio",
+    "rainfall_wetness",
+    "rainfall_flow",
+    "twi_hand",
+    "hand_squared",
+    "dem_river_ratio",
+    "hand_dem_ratio",
+    "flow_dist_ratio"
+  ],
+  "coords": [
+    "x",
+    "y"
+  ]
+}

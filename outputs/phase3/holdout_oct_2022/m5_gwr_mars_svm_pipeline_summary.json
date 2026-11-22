@@ -1,0 +1,50 @@
+{
+  "stages": [
+    "gwpca",
+    "gwr",
+    "mars",
+    "svm"
+  ],
+  "n_risk_classes": 6,
+  "gwpca_components": 8,
+  "svm_input_dim": 58,
+  "has_hinge_features": true,
+  "stage_features": "spatial_block_out_of_fold",
+  "oof_folds": 5,
+  "gwr": {
+    "bandwidth": 165.0,
+    "kernel": "bisquare",
+    "fixed": false,
+    "r2": 0.35636989335659486,
+    "r2_adj": null,
+    "aicc": 2532.1737701072825,
+    "n": 2000,
+    "k": 9
+  },
+  "mars": {
+    "model_type": "EarthBackend",
+    "backend": "r_earth",
+    "max_degree": 2,
+    "degree_used": 2,
+    "is_true_mars": true,
+    "max_terms": 21,
+    "penalty": 3.0
+  },
+  "svm": {
+    "best_params": {
+      "C": 0.33449721573149327,
+      "gamma": 0.0011440858298428225
+    },
+    "kernel": "rbf",
+    "calibrated": true,
+    "calibration_method": "sigmoid",
+    "tuning": {
+      "method": "bayesian_tpe_optuna",
+      "n_trials": 50,
+      "cv_folds": 5,
+      "cv_scheme": "spatial_block",
+      "tune_samples": 5000,
+      "cv_auc": 0.6679621563611332
+    }
+  }
+}

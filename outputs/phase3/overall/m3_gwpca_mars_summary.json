@@ -1,0 +1,12 @@
+{
+  "n_components": 8,
+  "mars": {
+    "model_type": "EarthBackend",
+    "backend": "r_earth",
+    "max_degree": 2,
+    "degree_used": 2,
+    "is_true_mars": true,
+    "max_terms": 21,
+    "penalty": 3.0
+  }
+}

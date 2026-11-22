@@ -1,0 +1,10 @@
+{
+  "meta_weights": {
+    "svm": 5.2859,
+    "mars": 0.4258,
+    "gwr": 0.9581,
+    "mgwr": 1.0776,
+    "gwpca_lr": 2.0606
+  },
+  "gwpca_components": 7
+}

@@ -1,0 +1,37 @@
+{
+  "gwpca_components": 8,
+  "gwr": {
+    "bandwidth": 158.0,
+    "kernel": "bisquare",
+    "fixed": false,
+    "r2": 0.4001050999271951,
+    "r2_adj": null,
+    "aicc": 2440.2859491403133,
+    "n": 2000,
+    "k": 9
+  },
+  "mgwr": {
+    "r2": 0.5538077817853428,
+    "r2_adj": null,
+    "aicc": null,
+    "n": 2000,
+    "k": 9,
+    "fallback_used": null,
+    "prediction_method": "numpy_multiscale_backfit",
+    "bandwidths": [
+      20.0,
+      640.0,
+      320.0,
+      320.0,
+      1980.0,
+      1280.0,
+      1280.0,
+      1980.0,
+      1980.0
+    ],
+    "bandwidths_min": 20.0,
+    "bandwidths_max": 1980.0,
+    "n_bandwidths": 9,
+    "n_iter": 4
+  }
+}

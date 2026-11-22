@@ -1,0 +1,21 @@
+{
+  "n_components": 8,
+  "local_variance_explained": 0.9899005423702234,
+  "svm": {
+    "best_params": {
+      "C": 1.9048744376304017,
+      "gamma": 0.008456252555900878
+    },
+    "kernel": "rbf",
+    "calibrated": true,
+    "calibration_method": "sigmoid",
+    "tuning": {
+      "method": "bayesian_tpe_optuna",
+      "n_trials": 50,
+      "cv_folds": 5,
+      "cv_scheme": "spatial_block",
+      "tune_samples": 5000,
+      "cv_auc": 0.5906467410142311
+    }
+  }
+}

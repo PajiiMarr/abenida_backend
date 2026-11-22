@@ -1,0 +1,29 @@
+{
+  "gwpca_components": 8,
+  "fallback_used": null,
+  "true_mgwr": true,
+  "mgwr": {
+    "r2": 0.4906881225554499,
+    "r2_adj": null,
+    "aicc": null,
+    "n": 2000,
+    "k": 9,
+    "fallback_used": null,
+    "prediction_method": "numpy_multiscale_backfit",
+    "bandwidths": [
+      20.0,
+      1980.0,
+      1980.0,
+      1980.0,
+      1980.0,
+      1980.0,
+      640.0,
+      1980.0,
+      1980.0
+    ],
+    "bandwidths_min": 20.0,
+    "bandwidths_max": 1980.0,
+    "n_bandwidths": 9,
+    "n_iter": 4
+  }
+}

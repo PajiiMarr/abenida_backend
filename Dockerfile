@@ -36,14 +36,15 @@ RUN pip install --upgrade pip setuptools wheel \
     && pip install -r requirements.txt
 
 # ---- App + artifacts --------------------------------------------------------
-# App tree — includes app/training/models.py where m1–m5 live.
+# App tree — includes app/training/models.py where m1–m5 live, and
+# app/training/run_suite.py (moved from repo root).
 COPY app ./app
 
 # Root-level scripts for the background retraining pipeline.
 # train_model.py was removed: it imported a non-existent app.training.trainer
-# and is superseded by run_suite.py, which drives m1–m5 via train_model_suite().
+# and is superseded by app/training/run_suite.py, which drives m1–m5 via
+# train_model_suite().
 COPY register_sar_to_dem.py .
-COPY run_suite.py .
 # COPY retrain_new_event.py .
 # COPY create_event_datasets.py .
 

@@ -25,6 +25,7 @@ MODELS: Dict[str, str] = {
     "m3_gwpca_mars": "GWPCA + MARS",
     "m4_stacking_all": "Stacking ensemble",
     "m5_gwr_mars_svm_pipeline": "GWR -> MARS -> SVM pipeline",
+    "m6_mgwr": "MGWR",  
 }
 DEFAULT_MODEL = "m4_stacking_all"
 

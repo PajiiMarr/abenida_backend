@@ -22,9 +22,8 @@ def _fetch_climatic_data():
     folder = Path("CLIMATIC DATAS")
     folder.mkdir(exist_ok=True)
     files = {
-        # saved name (what config.py expects) : blob name in the bucket
-        "Zamboanga_CHIRPS_Daily_2021_2026.csv": "Zamboonga_CHIRPS_Daily_2021_2026.csv",
-        "Zamboanga_GPM_V07_Daily_2021_2026.csv": "Zamboonga_GPM_V07_Daily_2021_2026.csv",
+        "Zamboonga_CHIRPS_Daily_2021_2026.csv": "Zamboonga_CHIRPS_Daily_2021_2026.csv",
+        "Zamboonga_GPM_V07_Daily_2021_2026.csv": "Zamboonga_GPM_V07_Daily_2021_2026.csv",
     }
     for local_name, blob_name in files.items():
         dest = folder / local_name
@@ -33,7 +32,7 @@ def _fetch_climatic_data():
         blob = urllib.parse.quote(f"CLIMATIC DATAS/{blob_name}")
         urllib.request.urlretrieve(f"{base}/{blob}?{token}", dest)
 
-        
+
 _fetch_climatic_data()
 import secrets
 import subprocess

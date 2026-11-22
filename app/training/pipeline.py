@@ -1,6 +1,11 @@
+raise ImportError(
+    "DEPRECATED: ModelTrainingPipeline is superseded by "
+    "app.training.models.train_model_suite(). See run_suite.py."
+)
+
 """
 Phase 3: Model Training Pipeline
-SVM → Stacking Ensemble (per event AND overall)
+SVM → Stacking Ensemble → MARS → GWR → MGWR (per event AND overall)
 """
 import logging
 import numpy as np
@@ -18,6 +23,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
 
 from .models import SVMModel, StackingEnsemble, ModelEvaluator
+from .models import MARSModeL, GWRModel, MGWRModel, _stratified_subsample
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,13 +44,19 @@ class ModelTrainingPipeline:
     """
     Complete Phase 3: Model Training Pipeline
 
-    Trains BOTH SVM and Stacking Ensemble for each category
+    Trains SVM, Stacking Ensemble, MARS, GWR and MGWR for each category
     ('overall' + every event), then classifies 4-level flood risk
     using the best available model (stacking preferred).
     """
 
-    def __init__(self, category: str = "overall"):
+    # models trained by train_all(), in order
+    MODEL_ORDER = ['svm', 'stacking', 'mars', 'gwr', 'mgwr']
+
+    def __init__(self, category: str = "overall", max_spatial_samples: int = 2000):
         self.category = category
+        # GWR / MGWR are O(n^2) in memory -> fit on a stratified subsample,
+        # then predict on every point via local weighted least squares.
+        self.max_spatial_samples = max_spatial_samples
         self.output_dir = Path(f"./outputs/phase3/{category}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -75,6 +87,18 @@ class ModelTrainingPipeline:
             'stacking': (
                 "The Stacking Ensemble combines predictions from several base models "
                 "(Logistic Regression, SVM, Random Forest) through a meta-model."
+            ),
+            'mars': (
+                "MARS (Multivariate Adaptive Regression Splines) fits piecewise-linear hinge "
+                "functions to capture non-linear effects and interactions between features."
+            ),
+            'gwr': (
+                "GWR (Geographically Weighted Regression) fits a separate local regression at "
+                "each location so the effect of every feature can vary across space."
+            ),
+            'mgwr': (
+                "MGWR (Multiscale GWR) extends GWR by letting each feature vary over its own "
+                "spatial scale (bandwidth)."
             ),
         }
 
@@ -215,6 +239,150 @@ class ModelTrainingPipeline:
             logger.error(f"Stacking training failed for {self.category}: {e}")
             import traceback; traceback.print_exc()
             self.metrics['stacking'] = {'status': 'failed', 'error': str(e), 'test': {}}
+
+    # =========================================================================
+    # MARS
+    # =========================================================================
+    def train_mars(self):
+        logger.info(f"\nTraining MARS Model for {self.category}")
+        try:
+            mars = MARSModeL(random_state=42)
+            mars.fit(self.X_train, self.y_train.astype(float))
+
+            y_train_proba = mars.predict_proba(self.X_train)[:, 1]
+            y_test_proba = mars.predict_proba(self.X_test)[:, 1]
+            y_train_class = (y_train_proba >= 0.5).astype(int)
+            y_test_class = (y_test_proba >= 0.5).astype(int)
+
+            train_metrics = ModelEvaluator.evaluate(self.y_train, y_train_class, y_train_proba)
+            test_metrics = ModelEvaluator.evaluate(self.y_test, y_test_class, y_test_proba)
+
+            self.models['mars'] = mars
+            self.metrics['mars'] = {
+                'train': train_metrics,
+                'test': test_metrics,
+                'summary': mars.get_summary(),
+                'hinge_functions': mars.get_hinge_functions(),
+                'feature_names': self.feature_names,
+                'cv_results': {},
+                'status': 'ok',
+            }
+
+            logger.info(f"MARS Test AUC: {test_metrics.get('roc_auc', 0):.4f} "
+                        f"(backend: {mars._backend})")
+            try:
+                _save_model(mars, self.output_dir / "mars_model.pkl")
+            except Exception as e:
+                logger.warning(f"MARS trained but could not be pickled: {e}")
+
+        except Exception as e:
+            logger.error(f"MARS training failed for {self.category}: {e}")
+            import traceback; traceback.print_exc()
+            self.metrics['mars'] = {'status': 'failed', 'error': str(e), 'test': {}}
+
+    # =========================================================================
+    # GWR / MGWR (shared helpers)
+    # =========================================================================
+    @staticmethod
+    def _predict_at_chunked(model, coords, X, chunk: int = 2000) -> np.ndarray:
+        """predict_at() in chunks (keeps the n_test x n_train distance matrix small)."""
+        coords = np.asarray(coords, dtype=float)
+        X = np.asarray(X, dtype=float)
+        out = [model.predict_at(coords[i:i + chunk], X[i:i + chunk])
+               for i in range(0, len(X), chunk)]
+        return np.clip(np.concatenate(out), 0, 1)
+
+    def _fit_spatial(self, model):
+        """Fit a GWR/MGWR on a stratified subsample of the training set."""
+        idx = _stratified_subsample(self.y_train, self.max_spatial_samples, 42)
+        logger.info(f"  Spatial fit on {len(idx)} / {len(self.y_train)} training samples")
+        model.fit(self.coords_train[idx], self.X_train[idx],
+                  np.asarray(self.y_train[idx], dtype=float))
+        return len(idx)
+
+    def _evaluate_spatial(self, name: str, model, n_fit: int, extra_summary: Dict):
+        train_proba = self._predict_at_chunked(model, self.coords_train, self.X_train)
+        test_proba = self._predict_at_chunked(model, self.coords_test, self.X_test)
+        train_class = (train_proba >= 0.5).astype(int)
+        test_class = (test_proba >= 0.5).astype(int)
+
+        train_metrics = ModelEvaluator.evaluate(self.y_train, train_class, train_proba)
+        test_metrics = ModelEvaluator.evaluate(self.y_test, test_class, test_proba)
+
+        summary = model.get_summary()
+        summary['n_fit_samples'] = int(n_fit)
+        summary.update(extra_summary)
+
+        self.models[name] = model
+        self.metrics[name] = {
+            'train': train_metrics,
+            'test': test_metrics,
+            'summary': summary,
+            'feature_names': self.feature_names,
+            'cv_results': {},
+            'status': 'ok',
+        }
+        logger.info(f"{name.upper()} Test AUC: {test_metrics.get('roc_auc', 0):.4f}")
+
+    # =========================================================================
+    # GWR
+    # =========================================================================
+    def train_gwr(self):
+        logger.info(f"\nTraining GWR Model for {self.category}")
+        try:
+            gwr = GWRModel()
+            n_fit = self._fit_spatial(gwr)
+            if not gwr.is_fitted:
+                raise RuntimeError("GWR did not fit")
+
+            # GWRModel silently falls back to Ridge when the spatial fit fails.
+            used_ridge = gwr._ridge_fallback is not None
+            if used_ridge:
+                logger.warning("GWR used Ridge fallback (spatial fit failed)")
+
+            self._evaluate_spatial('gwr', gwr, n_fit,
+                                   {'fallback_used': 'ridge' if used_ridge else None})
+
+            # GWRModel.__getstate__ drops the ridge fallback, so a pickled
+            # fallback model could not predict. Only pickle real GWR fits.
+            if used_ridge:
+                logger.warning("Skipping GWR pickle (Ridge fallback is not picklable)")
+            else:
+                _save_model(gwr, self.output_dir / "gwr_model.pkl")
+
+        except Exception as e:
+            logger.error(f"GWR training failed for {self.category}: {e}")
+            import traceback; traceback.print_exc()
+            self.metrics['gwr'] = {'status': 'failed', 'error': str(e), 'test': {}}
+
+    # =========================================================================
+    # MGWR
+    # =========================================================================
+    def train_mgwr(self):
+        logger.info(f"\nTraining MGWR Model for {self.category}")
+        try:
+            mgwr = MGWRModel()
+            n_fit = self._fit_spatial(mgwr)
+            if not mgwr.is_fitted:
+                raise RuntimeError("MGWR did not fit")
+
+            fallback = mgwr._fallback_used          # None | 'gwr' | 'ridge'
+            if fallback:
+                logger.warning(f"MGWR used '{fallback}' fallback (backfitting failed)")
+
+            self._evaluate_spatial('mgwr', mgwr, n_fit, {})
+
+            inner_ridge = (mgwr._gwr_fallback is not None
+                           and mgwr._gwr_fallback._ridge_fallback is not None)
+            if fallback == 'ridge' or inner_ridge:
+                logger.warning("Skipping MGWR pickle (Ridge fallback not picklable via GWRModel)")
+            else:
+                _save_model(mgwr, self.output_dir / "mgwr_model.pkl")
+
+        except Exception as e:
+            logger.error(f"MGWR training failed for {self.category}: {e}")
+            import traceback; traceback.print_exc()
+            self.metrics['mgwr'] = {'status': 'failed', 'error': str(e), 'test': {}}
 
     # =========================================================================
     # RISK
@@ -378,7 +546,7 @@ class ModelTrainingPipeline:
             lines.append("| Model | Status | Test AUC | Rating | Test Accuracy | Test F1 |")
             lines.append("|---|---|---|---|---|---|")
 
-            for name in ['svm', 'stacking']:
+            for name in self.MODEL_ORDER:
                 if name not in self.metrics: continue
                 m = self.metrics[name]
                 status = m.get('status', 'unknown')
@@ -414,6 +582,9 @@ class ModelTrainingPipeline:
         self.load_data()
         self.train_svm()
         self.train_stacking()          # ← stacking trained per category (event & overall)
+        self.train_mars()              # ← MARS
+        self.train_gwr()               # ← GWR
+        self.train_mgwr()              # ← MGWR
         self.generate_risk_maps()
         self.save_results()
         self.generate_report()
@@ -439,10 +610,11 @@ def main():
     unique_events = samples_gdf['event'].dropna().unique().tolist()
     categories = ["overall"] + sorted(unique_events)
 
-    logger.info(f"Found {len(categories)} categories to train (SVM + Stacking each): {categories}")
+    logger.info(f"Found {len(categories)} categories to train "
+                f"(SVM + Stacking + MARS + GWR + MGWR each): {categories}")
 
     for category in categories:
-        logger.info(f"\n{'='*60}\nStarting SVM + Stacking for category: {category}\n{'='*60}")
+        logger.info(f"\n{'='*60}\nStarting all models for category: {category}\n{'='*60}")
         try:
             pipeline = ModelTrainingPipeline(category)
             pipeline.train_all()

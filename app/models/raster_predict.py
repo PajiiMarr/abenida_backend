@@ -7,6 +7,9 @@ distance to river > 25 m, on land), so it only predicts there:
   - river channel (<= CHANNEL_BUFFER_M) ...... NaN  (never seen in training)
   - land outside flood-able terrain .......... OUTSIDE_VALUE (0.0 -> "Low")
   - flood-able terrain ....................... model probability
+
+Suite models take (coords, X); coords are the (row, col) pixel indices of the
+aligned grid, matching the (x, y) used in training.
 """
 
 import logging
@@ -16,27 +19,20 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import rasterio
 
-from app.preprocessing.config import (
-    OUTPUT_DIR,
-    RAW_FEATURES_TO_EXTRACT,
-    TARGET_RESOLUTION,
-)
+from app.preprocessing.config import OUTPUT_DIR, RAW_FEATURES_TO_EXTRACT
 from app.models.feature_engineering import build_feature_matrix
 from app.models.feature_service import FEATURE_RASTER_MAP
+from app.models.suite_registry import predict_proba
 
 logger = logging.getLogger(__name__)
 
 ALIGNED_DIR = OUTPUT_DIR / "aligned"
-PHASE3_DIR = Path("./outputs/phase3")
 
 # Must match create_sample_points() in sar_processor.py
 HAND_MIN, HAND_MAX = 0.0, 15.0
 SLOPE_MAX = 5.0
 CHANNEL_BUFFER_M = 25.0
 OUTSIDE_VALUE = 0.0
-
-# Raw features that training median-fills when NaN (feature_extraction.py)
-FILL_MEDIAN_FEATURES = ("aspect",)
 
 CHUNK_ROWS = 256
 
@@ -83,10 +79,9 @@ def flood_able_mask(arrays: Dict[str, np.ndarray]):
         raise RuntimeError("HAND and slope rasters are required to define the flood-able domain.")
 
     with np.errstate(invalid="ignore"):
-        # FIX: Use HAND instead of CHIRPS to define land. 
-        # This prevents CHIRPS data gaps from creating blocky holes.
+        # Land comes from HAND so CHIRPS gaps can't punch blocky holes in the map
         land = np.isfinite(hand)
-        
+
         in_terrain = (
             np.isfinite(hand) & (hand >= HAND_MIN) & (hand <= HAND_MAX)
             & np.isfinite(slope) & (slope <= SLOPE_MAX)
@@ -99,6 +94,7 @@ def flood_able_mask(arrays: Dict[str, np.ndarray]):
     domain = land & in_terrain & ~channel
     return land, channel, domain
 
+
 def _training_fill(name: str) -> Optional[float]:
     """Fill value used during training (feature_engineering.get_training_stats), if available."""
     try:
@@ -110,16 +106,11 @@ def _training_fill(name: str) -> Optional[float]:
 
 
 def _fill_median(arrays: Dict[str, np.ndarray], domain: np.ndarray) -> None:
-    """
-    Fill NaN in ALL raw features within the domain.
-    """
+    """Fill NaN in all raw features within the domain."""
     if not domain.any():
         return
 
     for name, a in arrays.items():
-        if a is None:
-            continue
-        
         missing = domain & ~np.isfinite(a)
         if not missing.any():
             continue
@@ -130,18 +121,17 @@ def _fill_median(arrays: Dict[str, np.ndarray], domain: np.ndarray) -> None:
             if not np.isfinite(fill):
                 fill = float(np.nanmedian(a))
             if not np.isfinite(fill):
-                fill = 0.0 # ultimate fallback
+                fill = 0.0
 
         a[missing] = fill
         logger.info(f"Filled {int(missing.sum()):,} NaN '{name}' pixels with {fill:.4f}")
 
-def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_ROWS) -> Tuple[np.ndarray, dict]:
-    """
-    Run the model on every flood-able pixel. Returns (probability_raster, meta).
-    """
+
+def predict_full_raster(model, feature_names, chunk_rows: int = CHUNK_ROWS) -> Tuple[np.ndarray, dict]:
+    """Run a suite model on every flood-able pixel. Returns (probability_raster, meta)."""
     raw_arrays, meta, _ = load_raw_stack()
     if not raw_arrays:
-        raise RuntimeError("No aligned rasters found — run preprocessing first.")
+        raise RuntimeError("No aligned rasters found; run preprocessing first.")
 
     land, channel, domain = flood_able_mask(raw_arrays)
     _fill_median(raw_arrays, domain)
@@ -155,7 +145,7 @@ def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_RO
     out = np.full((h, w), np.nan, dtype=np.float32)
     out[land & ~domain & ~channel] = OUTSIDE_VALUE
 
-    n_pred = 0
+    cols = np.arange(w)
     for r0 in range(0, h, chunk_rows):
         r1 = min(r0 + chunk_rows, h)
         dom = domain[r0:r1]
@@ -164,45 +154,22 @@ def predict_full_raster(model, scaler, feature_names, chunk_rows: int = CHUNK_RO
 
         chunk = {k: v[r0:r1] for k, v in raw_arrays.items()}
         stack = build_feature_matrix(chunk, feature_names)
-        n = stack.shape[-1]
-        flat = stack.reshape(-1, n).astype(np.float32)
+        flat = stack.reshape(-1, stack.shape[-1]).astype(np.float32)
 
         sel = dom.reshape(-1)
-        X = flat[sel]
-        
-        # FIX: Force no NaNs. Replace any stray NaNs with 0.0
-        X = np.nan_to_num(X, nan=0.0)
-        
-        proba = np.full(len(X), np.nan, dtype=np.float32)
-        if len(X) > 0:
-            Xv = X
-            if scaler is not None:
-                Xv = scaler.transform(Xv).astype(np.float32)
-            
-            # Final safety check in case scaling produced any NaN/Inf
-            Xv = np.nan_to_num(Xv, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            if hasattr(model, "predict_proba"):
-                p = model.predict_proba(Xv)[:, 1]
-            else:
-                p = model.predict(Xv)
-                
-            proba = np.asarray(p, dtype=np.float32)
-            n_pred += len(Xv)
+        X = np.nan_to_num(flat[sel], nan=0.0, posinf=0.0, neginf=0.0)
 
-        block = out[r0:r1].copy().reshape(-1)
-        block[sel] = proba
+        # (row, col) pixel indices, same coordinate system as training
+        rr, cc = np.meshgrid(np.arange(r0, r1), cols, indexing="ij")
+        coords = np.column_stack([rr.ravel(), cc.ravel()])[sel]
+
+        block = out[r0:r1].reshape(-1)
+        block[sel] = predict_proba(model, coords, X).astype(np.float32)
         out[r0:r1] = block.reshape(r1 - r0, w)
 
-    logger.info(f"Predicted {n_pred:,} pixels; 0 pixels skipped.")
-
-    meta.update(
-        dtype="float32",
-        count=1,
-        nodata=np.nan,
-        compress="lzw",
-    )
+    meta.update(dtype="float32", count=1, nodata=np.nan, compress="lzw")
     return out, meta
+
 
 def quantile_breaks(raster: np.ndarray, qs=(0.50, 0.75, 0.90)) -> Tuple[float, ...]:
     """Class breaks from flood-able pixels only (ignores NaN and OUTSIDE_VALUE)."""

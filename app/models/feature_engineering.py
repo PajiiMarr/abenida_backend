@@ -14,7 +14,7 @@ from typing import Any, Dict, Set
 import numpy as np
 import pandas as pd
 
-from app.preprocessing.config import OUTPUT_DIR
+from app.preprocessing.config import OUTPUT_DIR, EVENT_RAINFALL, ACTIVE_EVENT
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,16 @@ def compute_engineered_features(raw: Dict[str, Any]) -> Dict[str, Any]:
     out["hand_dem_ratio"] = hand / (dem + 1)
     out["twi_slope_ratio"] = twi / (slope + 0.01)
     out["flow_dist_ratio"] = log_flow / (dist + 1)
+
+    # --- ADDED: Inject static event rainfall features ---
+    for event_key, rain_val in EVENT_RAINFALL.items():
+        feat_name = f"{event_key}_event_rainfall"
+        if feat_name in st["training_cols"]:
+            out[feat_name] = np.full_like(dem, rain_val, dtype=np.float64)
+
+    default_rain = EVENT_RAINFALL.get(ACTIVE_EVENT, 150.0)
+    rain_val = float(raw.get("rainfall_mm", default_rain))
+    out["rainfall_mm"] = np.full_like(dem, rain_val, dtype=np.float64)
 
     # --- FILTER: only keep engineered features present in the trained dataset ---
     trained = st["training_cols"]

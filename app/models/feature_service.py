@@ -4,7 +4,7 @@ Sample aligned raw feature rasters at a lat/lng and build a model-ready vector.
 """
 
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pyproj
@@ -34,9 +34,20 @@ FEATURE_RASTER_MAP: Dict[str, str] = {
     "drainage_density": "drainage_density_aligned.tif",
     "chirps": "chirps_aligned.tif",
     "gpm": "gpm_aligned.tif",
+    "population_density": "population_density_aligned.tif",
 }
 
 _transformer = pyproj.Transformer.from_crs("EPSG:4326", TARGET_CRS, always_xy=True)
+
+
+def _training_fill(name: str) -> float:
+    """Fill value used in training for missing pixels (0.0 if unavailable)."""
+    try:
+        from app.models.feature_engineering import get_training_stats
+        v = get_training_stats()["fill"].get(name)
+        return float(v) if v is not None and np.isfinite(v) else 0.0
+    except Exception:
+        return 0.0
 
 
 def pixel_at(lat: float, lng: float) -> Tuple[int, int]:
@@ -57,22 +68,24 @@ def sample_raw_features(lat: float, lng: float) -> Dict[str, float]:
     for feat in RAW_FEATURES_TO_EXTRACT:
         fname = FEATURE_RASTER_MAP.get(feat)
         if fname is None:
-            out[feat] = 0.0
+            logger.warning(f"No aligned raster mapped for feature '{feat}'")
+            out[feat] = _training_fill(feat)
             continue
 
         path = ALIGNED_DIR / fname
         if not path.exists():
             logger.warning(f"Missing aligned raster for '{feat}': {path}")
-            out[feat] = 0.0
+            out[feat] = _training_fill(feat)
             continue
 
         with rasterio.open(path) as src:
             row, col = rowcol(src.transform, x, y)
             if 0 <= row < src.height and 0 <= col < src.width:
                 v = float(src.read(1, window=((row, row + 1), (col, col + 1)))[0, 0])
-                out[feat] = v if np.isfinite(v) else 0.0
+                # -9999 is the nodata sentinel written by save_aligned_rasters
+                out[feat] = v if np.isfinite(v) and v > -9990 else _training_fill(feat)
             else:
-                out[feat] = 0.0
+                out[feat] = _training_fill(feat)
 
     return out
 

@@ -1,7 +1,7 @@
 {
-  "total_samples": 43713,
-  "n_features": 27,
-  "n_raw_features": 9,
+  "total_samples": 44178,
+  "n_features": 29,
+  "n_raw_features": 10,
   "n_engineered_features": 18,
   "feature_names": [
     "dem",
@@ -13,6 +13,7 @@
     "distance_to_river",
     "chirps",
     "gpm",
+    "population_density",
     "wetness_index",
     "flood_concentration",
     "twi_hand_ratio",
@@ -30,9 +31,10 @@
     "hand_squared",
     "dem_river_ratio",
     "hand_dem_ratio",
-    "flow_dist_ratio"
+    "flow_dist_ratio",
+    "rainfall_mm"
   ],
-  "flood_samples": 16674,
-  "non_flood_samples": 27039,
-  "flood_percentage": 38.144259144876806
+  "flood_samples": 17516,
+  "non_flood_samples": 26662,
+  "flood_percentage": 39.648693920050704
 }

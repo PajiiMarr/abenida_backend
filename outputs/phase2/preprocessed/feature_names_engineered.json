@@ -8,6 +8,7 @@
   "distance_to_river",
   "chirps",
   "gpm",
+  "population_density",
   "wetness_index",
   "flood_concentration",
   "twi_hand_ratio",
@@ -25,5 +26,6 @@
   "hand_squared",
   "dem_river_ratio",
   "hand_dem_ratio",
-  "flow_dist_ratio"
+  "flow_dist_ratio",
+  "rainfall_mm"
 ]

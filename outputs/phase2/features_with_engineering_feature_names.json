@@ -8,7 +8,8 @@
     "flow_accumulation",
     "distance_to_river",
     "chirps",
-    "gpm"
+    "gpm",
+    "population_density"
   ],
   "engineered_features": [
     "wetness_index",
@@ -40,6 +41,7 @@
     "distance_to_river",
     "chirps",
     "gpm",
+    "population_density",
     "wetness_index",
     "flood_concentration",
     "twi_hand_ratio",
@@ -59,7 +61,7 @@
     "hand_dem_ratio",
     "flow_dist_ratio"
   ],
-  "n_raw": 9,
+  "n_raw": 10,
   "n_engineered": 18,
-  "n_total": 27
+  "n_total": 28
 }

@@ -15,9 +15,9 @@
     "bandwidth": 158.0,
     "kernel": "bisquare",
     "fixed": false,
-    "r2": 0.40010509998606414,
+    "r2": 0.4001051000369952,
     "r2_adj": null,
-    "aicc": 2440.2859492933867,
+    "aicc": 2440.285948919631,
     "n": 2000,
     "k": 9
   },
@@ -44,7 +44,7 @@
       "cv_folds": 5,
       "cv_scheme": "spatial_block",
       "tune_samples": 5000,
-      "cv_auc": 0.7052845480101153
+      "cv_auc": 0.7052828836941891
     }
   }
 }

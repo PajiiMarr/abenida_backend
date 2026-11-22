@@ -48,7 +48,7 @@ VARIANCE_THRESHOLD = GWPCA_PARAMS["variance_threshold"]
 from app.preprocessing import config as _cfg
 SVM_TUNING = {
     "n_trials": 50,          # Bayesian (TPE) iterations
-    "cv_folds": 3,           # CV folds per trial
+    "cv_folds": 5,           # CV folds per trial
     "max_tune_samples": 5000,  # tune on a stratified subsample, refit on all
     **getattr(_cfg, "SVM_TUNING", {}),
 }
@@ -1242,8 +1242,11 @@ class ModelEvaluator:
                 metrics['roc_auc'] = roc_auc_score(y_true, y_proba)
             except ValueError:
                 metrics['roc_auc'] = 0.5
-            metrics['rmse'] = np.sqrt(mean_squared_error(y_true, y_proba))
+            mse = mean_squared_error(y_true, y_proba)
+            metrics['mse'] = mse
+            metrics['rmse'] = np.sqrt(mse)
             metrics['mae'] = mean_absolute_error(y_true, y_proba)
+            metrics['r2'] = r2_score(y_true, y_proba)
         return metrics
 
     @staticmethod
@@ -1261,7 +1264,6 @@ class ModelEvaluator:
             }
             for k, v in scores.items()
         }
-
 
 # ===========================================================================
 # Suite: 5 models x (every event in config.AVAILABLE_EVENTS + overall)

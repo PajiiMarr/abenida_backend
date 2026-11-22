@@ -1,0 +1,21 @@
+ID,Input,Expected,Actual,Status
+TC1,"row=4326, col=177, dem=86, dist_river=793m, label=1",High (p>=0.5),p=0.340,FAIL
+TC2,"row=4948, col=664, dem=94, dist_river=114m, label=1",High (p>=0.5),p=0.255,FAIL
+TC3,"row=4872, col=625, dem=95, dist_river=469m, label=1",High (p>=0.5),p=0.253,FAIL
+TC4,"row=5200, col=2149, dem=89, dist_river=273m, label=1",High (p>=0.5),p=0.449,FAIL
+TC5,"row=4518, col=238, dem=88, dist_river=404m, label=1",High (p>=0.5),p=0.247,FAIL
+TC6,"row=4449, col=212, dem=87, dist_river=344m, label=1",High (p>=0.5),p=0.285,FAIL
+TC7,"row=2316, col=3156, dem=134, dist_river=34m, label=1",High (p>=0.5),p=0.441,FAIL
+TC8,"row=1435, col=3234, dem=117, dist_river=214m, label=0",Low (p<0.5),p=0.468,PASS
+TC9,"row=3880, col=2717, dem=117, dist_river=295m, label=0",Low (p<0.5),p=0.339,PASS
+TC10,"row=4564, col=414, dem=102, dist_river=431m, label=0",Low (p<0.5),p=0.269,PASS
+TC11,"row=4891, col=1922, dem=95, dist_river=329m, label=0",Low (p<0.5),p=0.410,PASS
+TC12,"row=4904, col=1916, dem=102, dist_river=312m, label=0",Low (p<0.5),p=0.365,PASS
+TC13,"row=5191, col=1144, dem=91, dist_river=2023m, label=0",Low (p<0.5),p=0.464,PASS
+TC14,"row=2752, col=2805, dem=132, dist_river=220m, label=0",Low (p<0.5),p=0.414,PASS
+TC15,NaN in hand,Graceful error / imputation,error: Input X contains NaN.,PASS
+TC16,NaN in dem and chirps,Graceful error / imputation,error: Input X contains NaN.,PASS
+TC17,Extreme dem = 10000 m,"Valid probability in [0, 1], no crash",p=0.829,PASS
+TC18,Negative slope = -10,"Valid probability in [0, 1], no crash",p=0.290,PASS
+TC19,All features = 0,"Valid probability in [0, 1], no crash",p=0.829,PASS
+TC20,"Coordinates outside city (99999, 99999)","Valid probability in [0, 1], no crash",p=0.330,PASS

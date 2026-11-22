@@ -1,0 +1,51 @@
+ID,Input,Expected,Actual,Status
+TC1,"row=4326, col=177, dem=86, dist_river=793m, label=1",High or Very High,"p=0.340, Medium",FAIL
+TC2,"row=4948, col=664, dem=94, dist_river=114m, label=1",High or Very High,"p=0.255, Low",FAIL
+TC3,"row=4872, col=625, dem=95, dist_river=469m, label=1",High or Very High,"p=0.253, Low",FAIL
+TC4,"row=5200, col=2149, dem=89, dist_river=273m, label=1",High or Very High,"p=0.449, High",PASS
+TC5,"row=4518, col=238, dem=88, dist_river=404m, label=1",High or Very High,"p=0.247, Low",FAIL
+TC6,"row=4449, col=212, dem=87, dist_river=344m, label=1",High or Very High,"p=0.285, Low",FAIL
+TC7,"row=2316, col=3156, dem=134, dist_river=34m, label=1",High or Very High,"p=0.441, High",PASS
+TC8,"row=4931, col=641, dem=94, dist_river=67m, label=1",High or Very High,"p=0.230, Low",FAIL
+TC9,"row=4918, col=669, dem=94, dist_river=121m, label=1",High or Very High,"p=0.248, Low",FAIL
+TC10,"row=4610, col=275, dem=89, dist_river=158m, label=1",High or Very High,"p=0.225, Low",FAIL
+TC11,"row=4066, col=95, dem=84, dist_river=126m, label=1",High or Very High,"p=0.356, Medium",FAIL
+TC12,"row=5212, col=1499, dem=88, dist_river=655m, label=1",High or Very High,"p=0.592, Very High",PASS
+TC13,"row=1443, col=3731, dem=112, dist_river=390m, label=1",High or Very High,"p=0.563, Very High",PASS
+TC14,"row=4911, col=2376, dem=95, dist_river=1156m, label=1",High or Very High,"p=0.590, Very High",PASS
+TC15,"row=4992, col=2723, dem=93, dist_river=1951m, label=1",High or Very High,"p=0.522, Very High",PASS
+TC16,"row=5048, col=1190, dem=138, dist_river=1028m, label=1",High or Very High,"p=0.310, Low",FAIL
+TC17,"row=1435, col=3234, dem=117, dist_river=214m, label=0",Low or Medium,"p=0.468, High",FAIL
+TC18,"row=3880, col=2717, dem=117, dist_river=295m, label=0",Low or Medium,"p=0.339, Medium",PASS
+TC19,"row=4564, col=414, dem=102, dist_river=431m, label=0",Low or Medium,"p=0.269, Low",PASS
+TC20,"row=4891, col=1922, dem=95, dist_river=329m, label=0",Low or Medium,"p=0.410, Medium",PASS
+TC21,"row=4904, col=1916, dem=102, dist_river=312m, label=0",Low or Medium,"p=0.365, Medium",PASS
+TC22,"row=5191, col=1144, dem=91, dist_river=2023m, label=0",Low or Medium,"p=0.464, High",FAIL
+TC23,"row=2752, col=2805, dem=132, dist_river=220m, label=0",Low or Medium,"p=0.414, Medium",PASS
+TC24,"row=4918, col=638, dem=94, dist_river=34m, label=0",Low or Medium,"p=0.248, Low",PASS
+TC25,"row=3865, col=2623, dem=119, dist_river=279m, label=0",Low or Medium,"p=0.296, Low",PASS
+TC26,"row=4962, col=785, dem=101, dist_river=325m, label=0",Low or Medium,"p=0.258, Low",PASS
+TC27,"row=4969, col=1024, dem=129, dist_river=79m, label=0",Low or Medium,"p=0.288, Low",PASS
+TC28,"row=5017, col=2444, dem=93, dist_river=542m, label=0",Low or Medium,"p=0.334, Medium",PASS
+TC29,"row=5178, col=1388, dem=89, dist_river=66m, label=0",Low or Medium,"p=0.571, Very High",FAIL
+TC30,"row=3247, col=101, dem=83, dist_river=92m, label=0",Low or Medium,"p=0.517, High",FAIL
+TC31,"row=5245, col=2278, dem=88, dist_river=547m, label=0",Low or Medium,"p=0.628, Very High",FAIL
+TC32,"row=459, col=1978, dem=267, dist_river=10165m, label=0",Low or Medium,"p=0.112, Low",PASS
+TC33,NaN in hand,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC34,NaN in dem and chirps,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC35,NaN in twi,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC36,All features NaN,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC37,Infinite slope value,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC38,Negative infinite dem,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC39,Too few features (27 of 28),Graceful error / imputation,"error: Expected 28 features, got 27",PASS
+TC40,Too many features (29 of 28),Graceful error / imputation,"error: Expected 28 features, got 29",PASS
+TC41,NaN coordinates,Graceful error / imputation,error: Missing or non-finite input values,PASS
+TC42,Extreme dem = 10000 m,"Valid class (Low/Medium/High/Very High), no crash","p=0.829, Very High",PASS
+TC43,Negative slope = -10,"Valid class (Low/Medium/High/Very High), no crash","p=0.290, Low",PASS
+TC44,All features = 0,"Valid class (Low/Medium/High/Very High), no crash","p=0.829, Very High",PASS
+TC45,"Coordinates outside city (99999, 99999)","Valid class (Low/Medium/High/Very High), no crash","p=0.330, Medium",PASS
+TC46,"Negative coordinates (-1, -1)","Valid class (Low/Medium/High/Very High), no crash","p=0.343, Medium",PASS
+TC47,Rainfall (chirps) x5,"Valid class (Low/Medium/High/Very High), no crash","p=0.480, High",PASS
+TC48,Distance to river = 0 m,"Valid class (Low/Medium/High/Very High), no crash","p=0.348, Medium",PASS
+TC49,Very large flow accumulation (1e7),"Valid class (Low/Medium/High/Very High), no crash","p=0.829, Very High",PASS
+TC50,Population density = 0,"Valid class (Low/Medium/High/Very High), no crash","p=0.108, Low",PASS

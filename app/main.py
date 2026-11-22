@@ -4,15 +4,41 @@ Flood Susceptibility API Server
 FastAPI backend serving the run_suite.py model suite (m1-m5 per event / overall).
 """
 
+
+
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import json
 import logging
 import os
+import urllib.parse
+import urllib.request
+
+def _fetch_climatic_data():
+    sas = os.environ.get("BLOB_SAS_URL", "")
+    if not sas:
+        return
+    base, token = sas.split("?", 1)
+    folder = Path("CLIMATIC DATAS")
+    folder.mkdir(exist_ok=True)
+    for name in (
+        "Zamboanga_CHIRPS_Daily_2021_2026.csv",
+        "Zamboanga_GPM_V07_Daily_2021_2026.csv",
+    ):
+        dest = folder / name
+        if dest.exists():
+            continue
+        blob = urllib.parse.quote(f"CLIMATIC DATAS/{name}")
+        urllib.request.urlretrieve(f"{base}/{blob}?{token}", dest)
+
+_fetch_climatic_data()
 import secrets
 import subprocess
 import sys
 import threading
+
+
+
 
 import geopandas as gpd
 import numpy as np
@@ -107,6 +133,8 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize Supabase client: {e}")
     supabase = None
+
+
 
 def upload_to_azure(file_bytes: bytes, blob_name: str):
     if not BLOB_SAS_URL:

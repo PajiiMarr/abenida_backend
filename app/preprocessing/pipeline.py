@@ -14,6 +14,7 @@ from .sar_processor import SARProcessor
 from .feature_extraction import FeatureExtractor
 from .standardization import Standardizer
 from .gwpca import GWPCAProcessor
+from .event_rainfall import get_event_rainfall_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +35,8 @@ class PreprocessingPipeline:
     2. Spatial Alignment - Reproject and clip to common extent
     3. SAR Processing - Load preprocessed SAR and generate sample points
     4. Feature Extraction - Extract feature values at sample points
-    5. Save FULL DATASET - Output as CSV (NO SPLIT YET)
+    4b. Event rainfall - derived from CHIRPS / GPM IMERG daily series
+    5. Save FULL DATASET - Output as CSV (train/test splitting is done in app.training, spatial-block 80:20)
     6. OPTIONAL: Standardization and GWPCA (only for model-ready data)
     """
     
@@ -43,6 +45,7 @@ class PreprocessingPipeline:
         self.aligned_rasters = None
         self.sample_points = None
         self.sample_labels = None
+        self.sample_events = None
         self.X_all = None          # All features
         self.y_all = None          # All labels
         self.coords_all = None     # All coordinates
@@ -51,23 +54,19 @@ class PreprocessingPipeline:
         self.gwpca = None
         self.X_pca = None
         
-    def run(self, use_gwpca: bool = False, use_standardization: bool = False, 
-            save_split: bool = False, test_size: float = 0.2):
+    def run(self, use_gwpca: bool = False, use_standardization: bool = False):
         """
         Run the complete preprocessing pipeline
         
         Args:
             use_gwpca: Apply GWPCA (default: False - save original features)
             use_standardization: Apply standardization (default: False)
-            save_split: Save train/test split as NPY (default: False - save full dataset as CSV)
-            test_size: Test set proportion (only used if save_split=True)
         """
         
         logger.info("=" * 60)
         logger.info("STARTING PHASE 2: PREPROCESSING PIPELINE")
         logger.info("=" * 60)
         logger.info(f"Output directory: {OUTPUT_DIR}")
-        logger.info(f"Save split: {save_split}")
         logger.info(f"Use GWPCA: {use_gwpca}")
         logger.info(f"Use standardization: {use_standardization}")
         
@@ -83,6 +82,9 @@ class PreprocessingPipeline:
         # Stage 4: Feature Extraction (EXTRACT FROM ALL POINTS)
         self._stage4_extract_features()
         
+        # Stage 4b: Event rainfall derived from CHIRPS / GPM daily series
+        self._stage4b_event_rainfall()
+        
         # Stage 5: Save FULL DATASET as CSV
         self._stage5_save_full_dataset()
         
@@ -93,10 +95,6 @@ class PreprocessingPipeline:
         # Stage 7: OPTIONAL - GWPCA (for model-ready data)
         if use_gwpca:
             self._stage7_gwpca()
-        
-        # Stage 8: OPTIONAL - Save train/test split (if requested)
-        if save_split:
-            self._stage8_save_split(test_size)
         
         logger.info("=" * 60)
         logger.info("PHASE 2 COMPLETED SUCCESSFULLY")
@@ -137,6 +135,11 @@ class PreprocessingPipeline:
         else:
             raise ValueError("No city boundary found — cannot define a target grid.")
 
+
+        from .population import build_population_density
+        self.aligned_rasters["population_density"] = build_population_density(
+            aligner.target_shape, aligner.target_transform, TARGET_CRS
+        )
         aligner.save_aligned_rasters(self.aligned_rasters, OUTPUT_DIR)
         self.aligner = aligner  # keep target_transform/shape around for later stages
 
@@ -178,7 +181,8 @@ class PreprocessingPipeline:
             auto_include_min_px=200,
         )
         
-        # Store coordinates for all points
+        # Store coordinates and events for all points
+        self.sample_events = processor.sample_events
         self.coords_all = self.sample_points.copy()
         
         logger.info(f"Generated {len(self.sample_points)} total sample points")
@@ -186,7 +190,13 @@ class PreprocessingPipeline:
         logger.info(f"  Non-flood points: {len(self.sample_labels) - np.sum(self.sample_labels)}")
         
         # Save sample points
-        gdf = processor.save_sample_points(self.sample_points, self.sample_labels, OUTPUT_DIR, meta)
+        gdf = processor.save_sample_points(
+            self.sample_points, 
+            self.sample_labels, 
+            OUTPUT_DIR, 
+            meta,
+            sample_events=self.sample_events
+        )
         
         # Get SAR summary
         sar_summary = processor.get_sar_summary()
@@ -211,7 +221,7 @@ class PreprocessingPipeline:
         # Store all features and labels
         self.X_all = X_all_features
         self.y_all = self.sample_labels
-        self.feature_names = extractor.feature_names
+        self.feature_names = list(extractor.feature_names)
         
         # Store counts
         self.n_raw_features = len(extractor.raw_feature_names)
@@ -235,6 +245,44 @@ class PreprocessingPipeline:
         # Compute statistics
         stats = extractor.compute_feature_statistics(X_all_features, self.sample_labels)
         stats.to_csv(OUTPUT_DIR / "feature_statistics_engineered.csv", index=False)
+
+    def _stage4b_event_rainfall(self):
+        """Stage 4b: add event rainfall derived from the CHIRPS / GPM daily series."""
+        logger.info("\n--- STAGE 4b: Event Rainfall (derived from CHIRPS + GPM IMERG) ---")
+
+        if self.sample_events is None:
+            logger.warning("No sample events found. Skipping rainfall injection.")
+            return
+
+        # Also writes outputs/phase2/event_rainfall_summary.csv (totals, max daily,
+        # max 3-day, rain days per product) -- use it for the manuscript tables.
+        table = get_event_rainfall_table(save_dir=OUTPUT_DIR)
+        logger.info("\n" + table.to_string(index=False))
+        mm = dict(zip(table["event"], table["rainfall_mm"]))
+
+        rainfall_arr = np.full(len(self.sample_events), np.nan, dtype=np.float64)
+        for ev, val in mm.items():
+            mask = self.sample_events == ev
+            rainfall_arr[mask] = val
+            logger.info(f"  {ev}: rainfall_mm={val:.1f} -> {int(mask.sum())} samples")
+
+        missing = np.isnan(rainfall_arr)
+        if missing.all():
+            logger.warning("No event rainfall could be derived. Skipping rainfall injection.")
+            return
+        if missing.any():
+            # e.g. uploaded events that have no entry/date in config.FLOOD_EVENTS
+            fill = float(np.nanmedian(rainfall_arr))
+            logger.warning(f"{int(missing.sum())} samples belong to events without derived rainfall "
+                           f"(not in FLOOD_EVENTS); filled with median {fill:.1f} mm")
+            rainfall_arr[missing] = fill
+
+        df = pd.DataFrame(self.X_all, columns=self.feature_names)
+        df['rainfall_mm'] = rainfall_arr
+        self.feature_names.append('rainfall_mm')
+        self.X_all = df[self.feature_names].values
+
+        logger.info(f"Added 'rainfall_mm': min={rainfall_arr.min():.1f}, max={rainfall_arr.max():.1f}")
 
     def _stage5_save_full_dataset(self):
         """Stage 5: Save FULL DATASET with engineered features"""
@@ -307,7 +355,7 @@ class PreprocessingPipeline:
         # Keep an unstandardized copy in memory so we don't destroy X_all
         X_unscaled = self.X_all.copy()
 
-        self.scaler = Standardizer('minmax')
+        self.scaler = Standardizer('standard')
         X_scaled = self.scaler.fit_transform(X_unscaled, self.feature_names)
 
         self.scaler.save_scaler(OUTPUT_DIR)
@@ -331,7 +379,7 @@ class PreprocessingPipeline:
         logger.info(f"Saved standardized engineered dataset: full_dataset_engineered_standardized.csv  {df_scaled.shape}")
 
         # Only overwrite X_all AFTER both files are written, in case later stages
-        # (GWPCA / split) want to use the scaled version.
+        # (GWPCA) want to use the scaled version.
         self.X_all = X_scaled
 
         logger.info("Standardization complete")
@@ -370,63 +418,6 @@ class PreprocessingPipeline:
         
         logger.info(f"GWPCA complete: {n_components} components")
         logger.info(f"Summary: {json.dumps(self.gwpca.get_summary(), indent=2)}")
-    
-    def _stage8_save_split(self, test_size=0.2):
-        """Stage 8: OPTIONAL - Save train/test split (only if requested)"""
-        logger.info("\n--- STAGE 8: Train/Test Split (Optional) ---")
-        
-        from sklearn.model_selection import train_test_split
-        
-        # Split data
-        X_train, X_test, y_train, y_test, coords_train, coords_test = train_test_split(
-            self.X_all,
-            self.y_all,
-            self.coords_all,
-            test_size=test_size,
-            random_state=42,
-            stratify=self.y_all
-        )
-        
-        # Save split
-        output_path = OUTPUT_DIR / "preprocessed"
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        np.save(output_path / "X_train.npy", X_train)
-        np.save(output_path / "X_test.npy", X_test)
-        np.save(output_path / "y_train.npy", y_train)
-        np.save(output_path / "y_test.npy", y_test)
-        np.save(output_path / "coords_train.npy", coords_train)
-        np.save(output_path / "coords_test.npy", coords_test)
-        
-        # Also save as CSV for inspection
-        train_df = pd.DataFrame(X_train, columns=self.feature_names)
-        train_df['flood_label'] = y_train.astype(int)
-        train_df['row'] = coords_train[:, 0]
-        train_df['col'] = coords_train[:, 1]
-        train_df.to_csv(OUTPUT_DIR / "train_data.csv", index=False)
-        
-        test_df = pd.DataFrame(X_test, columns=self.feature_names)
-        test_df['flood_label'] = y_test.astype(int)
-        test_df['row'] = coords_test[:, 0]
-        test_df['col'] = coords_test[:, 1]
-        test_df.to_csv(OUTPUT_DIR / "test_data.csv", index=False)
-        
-        # Save split info
-        split_info = {
-            'total_samples': len(self.X_all),
-            'train_samples': len(X_train),
-            'test_samples': len(X_test),
-            'train_flood': int(np.sum(y_train)),
-            'train_nonflood': int(len(y_train) - np.sum(y_train)),
-            'test_flood': int(np.sum(y_test)),
-            'test_nonflood': int(len(y_test) - np.sum(y_test)),
-            'test_size': test_size,
-        }
-        with open(output_path / "split_info.json", 'w') as f:
-            json.dump(split_info, f, indent=2)
-        
-        logger.info(f"Train/Test split saved to {output_path}")
-        logger.info(f"Split info: {json.dumps(split_info, indent=2)}")
 
 
 def main():
@@ -434,16 +425,12 @@ def main():
     parser = argparse.ArgumentParser(description='Run Phase 2 Preprocessing Pipeline')
     parser.add_argument('--gwpca', action='store_true', help='Apply GWPCA')
     parser.add_argument('--standardize', action='store_true', help='Apply standardization')
-    parser.add_argument('--split', action='store_true', help='Save train/test split')
-    parser.add_argument('--test-size', type=float, default=0.2, help='Test set proportion')
     args = parser.parse_args()
     
     pipeline = PreprocessingPipeline()
     pipeline.run(
         use_gwpca=args.gwpca,
-        use_standardization=args.standardize,
-        save_split=args.split,
-        test_size=args.test_size
+        use_standardization=args.standardize
     )
 
 

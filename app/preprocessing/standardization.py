@@ -13,14 +13,15 @@ logger = logging.getLogger(__name__)
 class Standardizer:
     """Standardize feature data for machine learning"""
     
-    def __init__(self, method: str = 'minmax'):
+    def __init__(self, method: str = 'standard'):
         """
         Args:
-            method: 'minmax', 'standard', 'robust'
+            method: 'standard' (z-score, default), 'minmax', 'robust'
         """
         self.method = method
         self.scaler = None
         self.scale_params = {}
+        self.fill_values_ = None  # per-column medians from the fit data
         
         if method == 'minmax':
             self.scaler = MinMaxScaler()
@@ -36,6 +37,7 @@ class Standardizer:
         logger.info(f"Fitting {self.method} scaler on {X.shape[1]} features...")
         
         # Handle NaN values
+        self.fill_values_ = self._column_medians(X)
         X_clean = self._handle_nan(X)
         
         # Fit and transform
@@ -76,18 +78,21 @@ class Standardizer:
         
         return self.scaler.inverse_transform(X_scaled)
     
+    @staticmethod
+    def _column_medians(X: np.ndarray) -> np.ndarray:
+        med = np.nanmedian(X, axis=0)
+        return np.where(np.isnan(med), 0.0, med)
+
     def _handle_nan(self, X: np.ndarray) -> np.ndarray:
-        """Handle NaN values by replacing with mean of each column"""
+        """Replace NaN with the per-column MEDIAN (fit-time medians when available),
+        consistent with feature_extraction."""
         X_clean = X.copy()
+        fill = self.fill_values_ if self.fill_values_ is not None else self._column_medians(X)
         for i in range(X.shape[1]):
-            col = X[:, i]
-            nan_mask = np.isnan(col)
+            nan_mask = np.isnan(X_clean[:, i])
             if nan_mask.any():
-                mean_val = np.nanmean(col)
-                if np.isnan(mean_val):
-                    mean_val = 0
-                X_clean[nan_mask, i] = mean_val
-                logger.info(f"Replaced {nan_mask.sum():,} NaN values in column {i} with {mean_val:.4f}")
+                X_clean[nan_mask, i] = fill[i]
+                logger.info(f"Replaced {nan_mask.sum():,} NaN values in column {i} with median {fill[i]:.4f}")
         return X_clean
     
     def save_scaler(self, output_dir: str):
@@ -100,6 +105,7 @@ class Standardizer:
             pickle.dump({
                 'scaler': self.scaler,
                 'params': self.scale_params,
+                'fill_values': self.fill_values_,
                 'method': self.method
             }, f)
         logger.info(f"Saved scaler to {output_path}")
@@ -110,5 +116,6 @@ class Standardizer:
             data = pickle.load(f)
             self.scaler = data['scaler']
             self.scale_params = data['params']
+            self.fill_values_ = data.get('fill_values')
             self.method = data['method']
         logger.info(f"Loaded scaler from {path}")

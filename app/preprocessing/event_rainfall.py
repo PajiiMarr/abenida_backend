@@ -1,145 +1,140 @@
 # backend/app/preprocessing/event_rainfall.py
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+"""
+Event rainfall derived from the satellite daily series (CHIRPS and GPM IMERG).
+
+Nothing is hard-coded: for every flood event in config.FLOOD_EVENTS the rainfall
+statistics are computed from the daily CSVs whose paths are defined in
+config.CLIMATIC (no absolute/personal paths).
+
+Per product (chirps / gpm), over the event window [date - days_before, date + days_after]:
+    total      accumulated rainfall (mm)
+    max_daily  wettest day (mm)            <- extreme-precipitation indicator
+    max_3day   wettest 3-day accumulation  <- extreme-precipitation indicator
+    rain_days  days with > 1 mm
+
+Event rainfall index (the single column used by the pipeline):
+    rainfall_mm = mean of the CHIRPS and GPM `max_3day` values
+                  (set config.RAINFALL_EVENT['metric'] to use another statistic).
+"""
 import logging
+from datetime import timedelta
 from pathlib import Path
+from typing import Dict, Optional
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+PRODUCTS = ("chirps", "gpm")
+
+
 class EventRainfallExtractor:
-    """Extract rainfall for specific flood events from daily data"""
-    
+    """Extract rainfall statistics for flood events from daily CHIRPS / GPM series."""
+
     def __init__(self, chirps_daily_path: Path, gpm_daily_path: Path):
-        self.chirps = pd.read_csv(chirps_daily_path)
-        self.gpm = pd.read_csv(gpm_daily_path)
-        
-        # Parse dates
-        self.chirps['date'] = pd.to_datetime(self.chirps['date'])
-        self.gpm['date'] = pd.to_datetime(self.gpm['date'])
-    
-    def extract_event_features(self, event_config: dict) -> dict:
-        """
-        Extract rainfall features for a single event from config
-        
-        Args:
-            event_config: Dictionary with 'date', 'days_before', 'days_after'
-            
-        Returns:
-            Dictionary of rainfall features
-        """
-        event_date = event_config['date']
-        days_before = event_config.get('days_before', 7)
-        days_after = event_config.get('days_after', 7)
-        event_key = event_config.get('sar_key', '')
-        
-        start_date = event_date - timedelta(days=days_before)
-        end_date = event_date + timedelta(days=days_after)
-        
-        # Filter CHIRPS
-        chirps_event = self.chirps[
-            (self.chirps['date'] >= start_date) & 
-            (self.chirps['date'] <= end_date)
-        ]
-        
-        # Filter GPM
-        gpm_event = self.gpm[
-            (self.gpm['date'] >= start_date) & 
-            (self.gpm['date'] <= end_date)
-        ]
-        
-        # Calculate pre-event (7 days before)
-        chirps_pre = self.chirps[
-            (self.chirps['date'] >= event_date - timedelta(days=days_before)) & 
-            (self.chirps['date'] < event_date)
-        ]
-        gpm_pre = self.gpm[
-            (self.gpm['date'] >= event_date - timedelta(days=days_before)) & 
-            (self.gpm['date'] < event_date)
-        ]
-        
-        # Calculate post-event (7 days after)
-        chirps_post = self.chirps[
-            (self.chirps['date'] > event_date) & 
-            (self.chirps['date'] <= event_date + timedelta(days=days_after))
-        ]
-        gpm_post = self.gpm[
-            (self.gpm['date'] > event_date) & 
-            (self.gpm['date'] <= event_date + timedelta(days=days_after))
-        ]
-        
-        # Build features with dynamic naming
-        prefix = event_key if event_key else f"event_{event_date.strftime('%Y%m%d')}"
-        
-        features = {
-            f'{prefix}_chirps_mean': chirps_event['rainfall_mm'].mean() if len(chirps_event) > 0 else 0,
-            f'{prefix}_chirps_max': chirps_event['rainfall_mm'].max() if len(chirps_event) > 0 else 0,
-            f'{prefix}_chirps_sum': chirps_event['rainfall_mm'].sum() if len(chirps_event) > 0 else 0,
-            f'{prefix}_chirps_std': chirps_event['rainfall_mm'].std() if len(chirps_event) > 0 else 0,
-            f'{prefix}_gpm_mean': gpm_event['rainfall_mm'].mean() if len(gpm_event) > 0 else 0,
-            f'{prefix}_gpm_max': gpm_event['rainfall_mm'].max() if len(gpm_event) > 0 else 0,
-            f'{prefix}_gpm_sum': gpm_event['rainfall_mm'].sum() if len(gpm_event) > 0 else 0,
-            f'{prefix}_gpm_std': gpm_event['rainfall_mm'].std() if len(gpm_event) > 0 else 0,
-            f'{prefix}_pre_rain': chirps_pre['rainfall_mm'].sum() if len(chirps_pre) > 0 else 0,
-            f'{prefix}_post_rain': chirps_post['rainfall_mm'].sum() if len(chirps_post) > 0 else 0,
-            f'{prefix}_gpm_pre_rain': gpm_pre['rainfall_mm'].sum() if len(gpm_pre) > 0 else 0,
-            f'{prefix}_gpm_post_rain': gpm_post['rainfall_mm'].sum() if len(gpm_post) > 0 else 0,
-            f'{prefix}_total_rain': chirps_event['rainfall_mm'].sum() if len(chirps_event) > 0 else 0,
-            f'{prefix}_rain_days': len(chirps_event[chirps_event['rainfall_mm'] > 1]) if len(chirps_event) > 0 else 0,
+        self.series = {
+            "chirps": self._read(chirps_daily_path),
+            "gpm": self._read(gpm_daily_path),
         }
-        
-        return features
+
+    @staticmethod
+    def _read(path) -> pd.Series:
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Daily rainfall CSV not found: {path}")
+        df = pd.read_csv(path)
+        df["date"] = pd.to_datetime(df["date"])
+        s = df.sort_values("date").drop_duplicates("date").set_index("date")["rainfall_mm"]
+        return pd.to_numeric(s, errors="coerce").astype(float)
+
+    @staticmethod
+    def _stats(s: pd.Series, start, end) -> Dict[str, float]:
+        w = s.loc[start:end].dropna()
+        if w.empty:
+            return {"total": np.nan, "max_daily": np.nan, "max_3day": np.nan, "rain_days": np.nan}
+        # reindex to consecutive days so the 3-day window really means 3 calendar days
+        w = w.reindex(pd.date_range(w.index.min(), w.index.max(), freq="D"))
+        w = w.fillna(0.0)
+        return {
+            "total": float(w.sum()),
+            "max_daily": float(w.max()),
+            "max_3day": float(w.rolling(3, min_periods=1).sum().max()),
+            "rain_days": float((w > 1).sum()),
+        }
+
+    def event_stats(self, event_config: dict) -> Dict[str, float]:
+        """Unprefixed statistics for one event, including the `rainfall_mm` index."""
+        from .config import RAINFALL_EVENT
+
+        date = event_config["date"]
+        start = date - timedelta(days=event_config.get("days_before", 7))
+        end = date + timedelta(days=event_config.get("days_after", 7))
+
+        out = {}
+        for prod in PRODUCTS:
+            for k, v in self._stats(self.series[prod], start, end).items():
+                out[f"{prod}_{k}"] = v
+
+        metric = RAINFALL_EVENT["metric"]
+        vals = [out[f"{p}_{metric}"] for p in PRODUCTS if np.isfinite(out[f"{p}_{metric}"])]
+        out["rainfall_mm"] = float(np.mean(vals)) if vals else np.nan
+        return out
+
+    def extract_event_features(self, event_config: dict) -> dict:
+        """Backwards-compatible: statistics keyed '<event>_<stat>'."""
+        prefix = event_config.get("sar_key") or f"event_{event_config['date']:%Y%m%d}"
+        return {f"{prefix}_{k}": v for k, v in self.event_stats(event_config).items()}
+
+
+# ----------------------------------------------------------------------
+# Module-level helpers (paths come from config, never hard-coded here)
+# ----------------------------------------------------------------------
+def _extractor() -> EventRainfallExtractor:
+    from .config import CLIMATIC
+    return EventRainfallExtractor(CLIMATIC["chirps_daily"], CLIMATIC["gpm_daily"])
+
+
+def get_event_rainfall_table(save_dir: Optional[Path] = None) -> pd.DataFrame:
+    """One row per flood event in config.FLOOD_EVENTS with all rainfall statistics."""
+    from .config import FLOOD_EVENTS
+
+    ext = _extractor()
+    rows = []
+    for key, cfg in FLOOD_EVENTS.items():
+        rows.append({"event": key, "date": cfg["date"].date(), "name": cfg.get("name", key),
+                     **ext.event_stats(cfg)})
+    table = pd.DataFrame(rows)
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        table.to_csv(save_dir / "event_rainfall_summary.csv", index=False)
+        logger.info(f"Saved event rainfall summary -> {save_dir / 'event_rainfall_summary.csv'}")
+    return table
+
+
+def get_event_rainfall_mm() -> Dict[str, float]:
+    """{event: rainfall index in mm}, derived from the CHIRPS / GPM daily series."""
+    table = get_event_rainfall_table()
+    return dict(zip(table["event"], table["rainfall_mm"]))
 
 
 def get_event_rainfall_features(event_config: dict) -> dict:
-    """
-    Get rainfall features for a single event from config
-    
-    Args:
-        event_config: Event configuration dictionary from config.py
-    
-    Returns:
-        Dictionary of rainfall features
-    """
-    from .config import CLIMATIC
-    
-    BASE_DIR = Path("/Users/mar/lectures/thesis 1/fsm/datas/FOR TRAINING")
-    extractor = EventRainfallExtractor(
-        BASE_DIR / "CLIMATIC DATAS/Zamboonga_CHIRPS_Daily_2021_2026.csv",
-        BASE_DIR / "CLIMATIC DATAS/Zamboonga_GPM_V07_Daily_2021_2026.csv"
-    )
-    
-    return extractor.extract_event_features(event_config)
+    return _extractor().extract_event_features(event_config)
 
 
 def get_all_event_rainfall_features() -> dict:
-    """
-    Get rainfall features for ALL flood events from config
-    
-    Returns:
-        Dictionary of all rainfall features
-    """
     from .config import FLOOD_EVENTS
-    
-    all_features = {}
-    for event_key, event_config in FLOOD_EVENTS.items():
-        features = get_event_rainfall_features(event_config)
-        all_features.update(features)
-    
-    return all_features
+    ext = _extractor()
+    feats = {}
+    for cfg in FLOOD_EVENTS.values():
+        feats.update(ext.extract_event_features(cfg))
+    return feats
 
 
 def get_active_event_rainfall_features() -> dict:
-    """
-    Get rainfall features for the ACTIVE event only
-    
-    Returns:
-        Dictionary of rainfall features for the active event
-    """
     from .config import FLOOD_EVENTS, ACTIVE_EVENT
-    
     if ACTIVE_EVENT not in FLOOD_EVENTS:
         logger.warning(f"Active event '{ACTIVE_EVENT}' not found in FLOOD_EVENTS")
         return {}
-    
     return get_event_rainfall_features(FLOOD_EVENTS[ACTIVE_EVENT])

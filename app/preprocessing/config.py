@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -6,14 +7,13 @@ from datetime import datetime
 
 load_dotenv()
 
-# Updated default paths to be relative so they work in the Azure container
 BASE_DIR = Path(os.getenv('BASE_DIR', './datas/FOR TRAINING'))
 PREPROCESS_DIR = Path(os.getenv('PREPROCESS_DIR', './outputs/phase2'))
 OUTPUT_DIR = Path(os.getenv('OUTPUT_DIR', './outputs/phase2'))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TOPOGRAPHIC = {
-    "dem": BASE_DIR / "TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM_Filled.tiff", 
+    "dem": BASE_DIR / "TOPOGRAPHIC DATAS/qgis/Zamboanga_DEM_Filled.tiff",
     "slope": BASE_DIR / "TOPOGRAPHIC DATAS/qgis/Zamboanga_Slope.tiff",
     "aspect": BASE_DIR / "TOPOGRAPHIC DATAS/qgis/Zamboanga_Aspect.tiff",
     "twi": BASE_DIR / "TOPOGRAPHIC DATAS/qgis/Zamboanga_TWI.tif",
@@ -36,10 +36,34 @@ HYDROLOGICAL_RASTERS = {
 }
 
 CLIMATIC = {
-    "chirps": BASE_DIR / "CLIMATIC DATAS/qgis/Zamboanga_CHIRPS_Resampled.tiff", 
+    "chirps": BASE_DIR / "CLIMATIC DATAS/qgis/Zamboanga_CHIRPS_Resampled.tiff",
     "gpm": BASE_DIR / "CLIMATIC DATAS/Zamboanga_GPM_V07_2021_2026.tif",
-    "chirps_daily": BASE_DIR / "CLIMATIC DATAS/Zamboonga_CHIRPS_Daily_2021_2026.csv", 
-    "gpm_daily": BASE_DIR / "CLIMATIC DATAS/Zamboonga_GPM_V07_Daily_2021_2026.csv", 
+    "chirps_daily": BASE_DIR / "CLIMATIC DATAS/Zamboonga_CHIRPS_Daily_2021_2026.csv",
+    "gpm_daily": BASE_DIR / "CLIMATIC DATAS/Zamboonga_GPM_V07_Daily_2021_2026.csv",
+}
+
+# Event rainfall is DERIVED from the CHIRPS / GPM IMERG daily series (see
+# event_rainfall.py); it is no longer hard-coded. 'metric' is the statistic
+# averaged over the two products to form the `rainfall_mm` event index:
+#   'max_3day' (wettest 3-day accumulation), 'max_daily', or 'total'.
+RAINFALL_EVENT = {"metric": "max_3day"}
+
+
+def __getattr__(name):
+    """Lazy backwards-compat: `from .config import EVENT_RAINFALL` still works,
+    but the values are computed from the daily CSVs instead of hard-coded."""
+    if name == "EVENT_RAINFALL":
+        from .event_rainfall import get_event_rainfall_mm
+        return get_event_rainfall_mm()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+POPULATION = {
+    "census": Path(os.getenv("POPULATION_XLSX", "./data/population/Region-IX_0.xlsx")),
+    "sheet": "City of Zamboanga",
+    "barangays": Path("./data/boundaries/zamboanga_city_barangays.geojson"),
+    "name_field": "adm4_name",
+    "max_unmatched_frac": 0.05,   # fail if more than 5% of barangays can't be matched
 }
 
 CLIMATIC_RASTERS = {
@@ -122,17 +146,53 @@ AVAILABLE_EVENTS = list(FLOOD_EVENTS.keys())
 
 ACTIVE_EVENT = "oct_2022"
 
-DYNAMIC_EVENT_NAME = os.getenv('DYNAMIC_EVENT_NAME')
-if DYNAMIC_EVENT_NAME:
-    SAR_REGISTERED[DYNAMIC_EVENT_NAME] = {
-        "flood_map": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_flood_map_registered.tif",
-        "ndfi": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_ndfi_registered.tif",
-        "diff_db": REGISTERED_SAR_DIR / f"{DYNAMIC_EVENT_NAME}_diff_db_registered.tif",
+# ---- Events added through the upload API ------------------------------------
+# Persisted so earlier uploads stay in the dataset and in the model suite
+# (AVAILABLE_EVENTS drives EVENT_KEYS in app/training/models.py).
+DYNAMIC_EVENTS_FILE = OUTPUT_DIR / "dynamic_events.json"
+
+
+def _read_dynamic_events():
+    try:
+        return [str(e) for e in json.loads(DYNAMIC_EVENTS_FILE.read_text())]
+    except Exception:
+        return []
+
+
+def register_dynamic_event(name: str) -> None:
+    """Persist an uploaded event so every later run includes it."""
+    names = _read_dynamic_events()
+    if name not in names:
+        names.append(name)
+        DYNAMIC_EVENTS_FILE.write_text(json.dumps(names, indent=2))
+
+
+def unregister_dynamic_event(name: str) -> None:
+    DYNAMIC_EVENTS_FILE.write_text(
+        json.dumps([n for n in _read_dynamic_events() if n != name], indent=2)
+    )
+
+
+DYNAMIC_EVENT_NAME = os.getenv('DYNAMIC_EVENT_NAME')   # event being processed right now
+DYNAMIC_EVENTS = _read_dynamic_events()
+if DYNAMIC_EVENT_NAME and DYNAMIC_EVENT_NAME not in DYNAMIC_EVENTS:
+    DYNAMIC_EVENTS.append(DYNAMIC_EVENT_NAME)
+
+for _name in DYNAMIC_EVENTS:
+    if _name in FLOOD_EVENTS:      # re-upload of a built-in event keeps its entry
+        continue
+    SAR_REGISTERED[_name] = {
+        "flood_map": REGISTERED_SAR_DIR / f"{_name}_flood_map_registered.tif",
+        "ndfi": REGISTERED_SAR_DIR / f"{_name}_ndfi_registered.tif",
+        "diff_db": REGISTERED_SAR_DIR / f"{_name}_diff_db_registered.tif",
     }
+    AVAILABLE_EVENTS.append(_name)
+
+if DYNAMIC_EVENT_NAME:
     ACTIVE_EVENT = DYNAMIC_EVENT_NAME
 
 SOCIO = {
-    "census": BASE_DIR / "SOCIO DEMOGRAPHIC DATAS/Region-IX_0.xlsx", 
+    "census": BASE_DIR / "SOCIO DEMOGRAPHIC DATAS/Region-IX_0.xlsx",
     "zc_boundary": BASE_DIR / "SOCIO DEMOGRAPHIC DATAS/zamboanga_city_boundary_UTM.shp",
 }
 
@@ -153,9 +213,10 @@ RAW_FEATURES_TO_EXTRACT = [
     "hand",
     "flow_accumulation",
     "distance_to_river",
-    # "drainage_density",   # 0.000 importance — constant across samples, contributes nothing
+    # "drainage_density",
     "chirps",
     "gpm",
+    "population_density",   # persons/km2, PSA 2024 census, barangay level
 ]
 
 ENGINEERED_FEATURES_ENABLED = True
@@ -218,8 +279,13 @@ SAMPLE_PARAMS = {
 
 GWPCA_PARAMS = {
     "variance_threshold": 0.85,
-    "bandwidth_method": "aicc",
+    "bandwidth_method": "golden_loocv",
 }
 
 
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+# ALL_FEATURES = RAW_FEATURES_TO_EXTRACT + ENGINEERED_FEATURES + ["rainfall_mm"]
+
+
+SVM_TUNING = {"n_trials": 50, "cv_folds": 5, "max_tune_samples": 5000}

@@ -6,6 +6,7 @@ FastAPI backend serving the run_suite.py model suite (m1-m5 per event / overall)
 
 
 
+from datetime import date as date_cls
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import json
@@ -68,7 +69,7 @@ from app.models.suite_registry import (
     safe_event,
     suite_features,
 )
-from app.preprocessing.config import register_dynamic_event
+from app.preprocessing.config import register_dynamic_event, FLOOD_EVENTS
 from app.models.feature_engineering import build_feature_matrix
 from app.models.feature_service import sample_raw_features, pixel_at
 from app.models.raster_predict import (
@@ -136,6 +137,8 @@ except Exception as e:
     logger.error(f"Failed to initialize Supabase client: {e}")
     supabase = None
 
+# Event keys follow the built-in convention: oct_2022, jan_2023, ...
+MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 
 def upload_to_azure(file_bytes: bytes, blob_name: str):
@@ -143,10 +146,20 @@ def upload_to_azure(file_bytes: bytes, blob_name: str):
         raise ValueError("BLOB_SAS_URL is not configured.")
     base_url, sas_token = BLOB_SAS_URL.split("?", 1)
     blob_url = f"{base_url}/{blob_name}?{sas_token}"
-    blob_client = BlobClient.from_blob_url(blob_url)
-    blob_client.upload_blob(file_bytes, overwrite=True)
+    # Small blocks + long timeouts so slow uplinks don't hit the socket write timeout
+    blob_client = BlobClient.from_blob_url(
+        blob_url,
+        max_block_size=4 * 1024 * 1024,
+        max_single_put_size=4 * 1024 * 1024,
+    )
+    blob_client.upload_blob(
+        file_bytes,
+        overwrite=True,
+        max_concurrency=2,
+        connection_timeout=60,
+        timeout=600,
+    )
     return f"{base_url}/{blob_name}"
-
 # ---------- Paths & Data ----------
 OUTPUT_DIR = PHASE2_DIR
 COMPARISON_CSV = PHASE3_DIR / "suite_model_comparison.csv"
@@ -562,6 +575,9 @@ async def get_gwpca_results():
 async def upload_flood_event(
     background_tasks: BackgroundTasks,
     eventName: str = Form(...),
+    month: int = Form(...),
+    year: int = Form(...),
+    day: int = Form(...),
     rainfallDetails: Optional[str] = Form(None),
     affectedBarangays: Optional[str] = Form(None),
     affectedFamilies: Optional[str] = Form(None),
@@ -575,15 +591,25 @@ async def upload_flood_event(
     powerSupplyDamages: Optional[str] = Form(None),
     floodMap: UploadFile = File(...),
     diffDb: UploadFile = File(...),
-    ndfi: UploadFile = File(...)
+    ndfi: UploadFile = File(...),
 ):
     if not supabase:
         raise HTTPException(500, "Supabase client not configured.")
 
     try:
-        safe_event_name = "".join([c if c.isalnum() else "_" for c in eventName]).strip("_").lower()
-        if not safe_event_name:
-            raise HTTPException(422, "Event name must contain letters or digits.")
+        if not 1 <= month <= 12:
+            raise HTTPException(422, "Month must be between 1 and 12.")
+        if not 2000 <= year <= 2100:
+            raise HTTPException(422, "Year must be between 2000 and 2100.")
+        try:
+            date_cls(year, month, day)
+        except ValueError:
+            raise HTTPException(422, "Invalid day for the selected month and year.")
+
+        # Same convention as the built-in events: oct_2022, jan_2023, ...
+        safe_event_name = f"{MONTH_ABBR[month - 1]}_{year}"
+        if safe_event_name in FLOOD_EVENTS or safe_event_name in available_events():
+            raise HTTPException(409, f"Event '{safe_event_name}' already exists.")
 
         flood_map_bytes = await floodMap.read()
         diff_db_bytes = await diffDb.read()
@@ -596,6 +622,9 @@ async def upload_flood_event(
 
         db_payload = {
             "event_name": eventName,
+            "month": month,
+            "year": year,
+            "day": day,
             "rainfall_details": rainfallDetails,
             "affected_barangays": int(affectedBarangays) if affectedBarangays else None,
             "affected_families": int(affectedFamilies) if affectedFamilies else None,
@@ -609,7 +638,7 @@ async def upload_flood_event(
             "power_supply_damages": float(powerSupplyDamages) if powerSupplyDamages else None,
             "flood_map_url": flood_url,
             "diff_db_url": diff_url,
-            "ndfi_url": ndfi_url
+            "ndfi_url": ndfi_url,
         }
 
         response = supabase.table("flood_events").insert(db_payload).execute()
@@ -633,7 +662,7 @@ async def upload_flood_event(
             str(local_flood_map),
             str(local_diff_db),
             str(local_ndfi),
-            safe_event_name
+            safe_event_name,
         )
 
         return {
@@ -648,6 +677,7 @@ async def upload_flood_event(
     except Exception as e:
         logger.error(f"Error uploading event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/predict/point")
 async def predict_point(req: PredictPointRequest):

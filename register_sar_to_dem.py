@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 """
-Register the October 2022 SAR layers to the DEM grid (georeferenced reprojection).
+Register SAR layers (flood map, diff dB, NDFI) to the DEM grid (georeferenced reprojection).
 
 Every input must already carry a CRS and a real geotransform. Files without
 them are rejected instead of guessed.
 """
-import logging
-from pathlib import Path
 import argparse
+import logging
+import os
+import sys
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -21,7 +23,8 @@ BASE_DIR = Path("/Users/mar/lectures/thesis 1/fsm/datas/FOR TRAINING")
 OUTPUT_DIR = Path("./outputs/phase2/registered_sar")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DEM_PATH = BASE_DIR / "TOPOGRAPHIC DATAS/Zamboanga_DEM.tif"
+# Override on the server with the DEM_PATH env var
+DEM_PATH = Path(os.getenv("DEM_PATH", BASE_DIR / "TOPOGRAPHIC DATAS/Zamboanga_DEM.tif"))
 
 SAR_EVENTS = {
     'jul_2024': {
@@ -146,20 +149,28 @@ def main():
     if args.event and args.flood:
         logger.info(f"\n--- Processing dynamic event: {args.event} ---")
         sar_paths = {"flood_map": Path(args.flood)}
-        if args.diff: sar_paths["diff_db"] = Path(args.diff)
-        if args.ndfi: sar_paths["ndfi"] = Path(args.ndfi)
-        
+        if args.diff:
+            sar_paths["diff_db"] = Path(args.diff)
+        if args.ndfi:
+            sar_paths["ndfi"] = Path(args.ndfi)
+
+        # Any failure exits non-zero so the retraining pipeline stops
+        failed = False
         for key, sar_path in sar_paths.items():
             if not sar_path.exists():
-                logger.warning(f"File not found: {sar_path}")
+                logger.error(f"File not found: {sar_path}")
+                failed = True
                 continue
             output_path = OUTPUT_DIR / f"{args.event}_{key}_registered.tif"
             try:
                 register_sar_to_dem(sar_path, output_path, DEM_PATH)
             except Exception as e:
                 logger.error(f"Failed to register {key}: {e}")
+                failed = True
+        if failed:
+            sys.exit(1)
     else:
-        # Fallback to your hardcoded events if run manually
+        # Fallback to the hardcoded events if run manually
         for event_name, event_paths in SAR_EVENTS.items():
             logger.info(f"\n--- Processing {event_name} ---")
             for key, sar_path in event_paths.items():
